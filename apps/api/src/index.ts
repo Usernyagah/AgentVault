@@ -25,10 +25,16 @@ import {
   getChatHistory,
   getPendingApprovals,
   getLedger,
+  appendVerifiedTransaction,
   queryLedger,
   getRecentDecisions,
   verifyChain,
   initLedger,
+  verifyArcUsdcTransfer,
+  ArcTransactionVerificationError,
+  getRealTractionTransactions,
+  buildTractionSummary,
+  formatTractionMarkdown,
   getGuardrails,
   setGuardrails,
   getGuardrailsSummary,
@@ -67,7 +73,7 @@ import {
 // ── Load environment ────────────────────────────
 config({ path: "../../.env" });
 
-const app = new Hono();
+const app = new Hono<{ Variables: { demoMode: boolean } }>();
 
 function onboardingAdminError(c: Context) {
   const configuredToken = process.env.ONBOARDING_ADMIN_TOKEN;
@@ -101,7 +107,46 @@ function onboardingAdminError(c: Context) {
 }
 
 // ── Middleware ──────────────────────────────────
-app.use("/*", cors());
+app.use("/*", cors({ exposeHeaders: ["X-AgentVault-Mode"] }));
+app.use("/*", async (c, next) => {
+  const demoModeAtRequest = isDemoEnabled();
+  const modeAtRequest = demoModeAtRequest ? "demo" : "live";
+  c.set("demoMode", demoModeAtRequest);
+  const path = c.req.path;
+  const method = c.req.method;
+  const demoBlocked =
+    modeAtRequest === "demo" &&
+    (
+      path === "/api/invoices" ||
+      path === "/api/payments/incoming" ||
+      path === "/api/obligations" ||
+      path.startsWith("/api/obligations/") ||
+      path === "/api/guardrails" ||
+      (path === "/api/traction/verify" && method === "POST") ||
+      (path === "/api/chat/history" && method === "GET") ||
+      (path === "/api/onboarding/wallet" && method === "POST") ||
+      (path === "/api/onboarding/rules" && method === "PUT")
+    );
+
+  if (demoBlocked) {
+    c.header("X-AgentVault-Mode", "demo");
+    return c.json<ApiResponse>(
+      {
+        success: false,
+        error: "This live workspace endpoint is disabled in Demo Mode to prevent synthetic and live data from mixing.",
+        timestamp: new Date().toISOString(),
+      },
+      409
+    );
+  }
+
+  await next();
+  const responseMode =
+    path === "/api/demo" && method === "POST"
+      ? isDemoEnabled() ? "demo" : "live"
+      : modeAtRequest;
+  c.header("X-AgentVault-Mode", responseMode);
+});
 
 // ── Health Check ───────────────────────────────
 app.get("/", (c) =>
@@ -120,7 +165,7 @@ app.get("/health", (c) =>
 // ── Dashboard ──────────────────────────────────
 app.get("/api/dashboard", async (c) => {
   try {
-    if (isDemoEnabled()) {
+    if (c.get("demoMode")) {
       return c.json<ApiResponse>({
         success: true,
         data: getDemoDashboard(),
@@ -144,7 +189,10 @@ app.get("/api/dashboard", async (c) => {
 app.get("/api/demo", (c) =>
   c.json<ApiResponse>({
     success: true,
-    data: { enabled: isDemoEnabled() },
+    data: {
+      enabled: c.get("demoMode"),
+      mode: c.get("demoMode") ? "demo" : "live",
+    },
     timestamp: new Date().toISOString(),
   })
 );
@@ -161,7 +209,10 @@ app.post("/api/demo", async (c) => {
     setDemoEnabled(body.enabled);
     return c.json<ApiResponse>({
       success: true,
-      data: { enabled: isDemoEnabled() },
+      data: {
+        enabled: isDemoEnabled(),
+        mode: isDemoEnabled() ? "demo" : "live",
+      },
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
@@ -321,7 +372,7 @@ app.post("/api/onboarding/activity", async (c) => {
 // ── Chat with Agent ────────────────────────────
 app.post("/api/chat", async (c) => {
   try {
-    if (isDemoEnabled()) {
+    if (c.get("demoMode")) {
       return c.json<ApiResponse>(
         {
           success: false,
@@ -364,7 +415,7 @@ app.get("/api/chat/history", (c) => {
 // ── Agent Actions ──────────────────────────────
 app.post("/api/agent/evaluate", async (c) => {
   try {
-    if (isDemoEnabled()) {
+    if (c.get("demoMode")) {
       return c.json<ApiResponse>({
         success: true,
         data: runDemoEvaluation(),
@@ -488,14 +539,14 @@ app.put("/api/obligations/:id/status", async (c) => {
 app.get("/api/approvals", (c) => {
   return c.json<ApiResponse>({
     success: true,
-    data: isDemoEnabled() ? getDemoApprovals() : getPendingApprovals(),
+    data: c.get("demoMode") ? getDemoApprovals() : getPendingApprovals(),
     timestamp: new Date().toISOString(),
   });
 });
 
 app.post("/api/approvals/:id/approve", async (c) => {
   const id = c.req.param("id");
-  if (isDemoEnabled()) {
+  if (c.get("demoMode")) {
     const success = resolveDemoApproval(id, true);
     return c.json<ApiResponse>(
       { success, error: success ? undefined : "Pending demo approval not found.", timestamp: new Date().toISOString() },
@@ -511,7 +562,7 @@ app.post("/api/approvals/:id/approve", async (c) => {
 
 app.post("/api/approvals/:id/reject", (c) => {
   const id = c.req.param("id");
-  if (isDemoEnabled()) {
+  if (c.get("demoMode")) {
     const success = resolveDemoApproval(id, false);
     return c.json<ApiResponse>(
       { success, error: success ? undefined : "Pending demo approval not found.", timestamp: new Date().toISOString() },
@@ -568,23 +619,18 @@ app.get("/api/ledger", (c) => {
     );
   }
 
-  const data = isDemoEnabled()
-    ? queryDemoLedger({
-        action: action as DecisionAction | undefined,
-        search,
-        since: since === undefined ? undefined : new Date(since).toISOString(),
-        until: until === undefined ? undefined : new Date(until).toISOString(),
-        limit,
-        offset,
-      })
-    : queryLedger({
+  const demoMode = c.get("demoMode");
+  const query = {
     action: action as DecisionAction | undefined,
     search,
     since: since === undefined ? undefined : new Date(since).toISOString(),
     until: until === undefined ? undefined : new Date(until).toISOString(),
     limit,
     offset,
-  });
+  };
+  const data = demoMode
+    ? { ...queryDemoLedger(query), demoMode: true }
+    : { ...queryLedger(query), demoMode: false };
   return c.json<ApiResponse>({
     success: true,
     data,
@@ -593,7 +639,7 @@ app.get("/api/ledger", (c) => {
 });
 
 app.get("/api/ledger/verify", (c) => {
-  if (isDemoEnabled()) {
+  if (c.get("demoMode")) {
     return c.json<ApiResponse>({
       success: true,
       data: { valid: null, demoMode: true, entries: queryDemoLedger({ limit: 500, offset: 0 }).total },
@@ -603,9 +649,92 @@ app.get("/api/ledger/verify", (c) => {
   const valid = verifyChain();
   return c.json<ApiResponse>({
     success: true,
-    data: { valid, entries: getLedger().length },
+    data: { valid, demoMode: false, entries: getLedger().length },
     timestamp: new Date().toISOString(),
   });
+});
+
+app.get("/api/traction", (c) => {
+  const transactions = c.get("demoMode")
+    ? []
+    : getRealTractionTransactions(getLedger());
+  return c.json<ApiResponse>({
+    success: true,
+    data: {
+      transactions,
+      demoMode: c.get("demoMode"),
+      withheldInDemoMode: c.get("demoMode"),
+    },
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.get("/api/traction/summary", (c) => {
+  const format = c.req.query("format") ?? "json";
+  if (format !== "json" && format !== "markdown") {
+    return c.json<ApiResponse>(
+      { success: false, error: "format must be json or markdown.", timestamp: new Date().toISOString() },
+      400
+    );
+  }
+  const transactions = c.get("demoMode")
+    ? []
+    : getRealTractionTransactions(getLedger());
+  const summary = buildTractionSummary(transactions);
+  if (format === "markdown") {
+    return c.text(formatTractionMarkdown(summary), 200, { "Content-Type": "text/markdown; charset=utf-8" });
+  }
+  return c.json<ApiResponse>({
+    success: true,
+    data: { ...summary, demoMode: c.get("demoMode") },
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.post("/api/traction/verify", async (c) => {
+  const authError = onboardingAdminError(c);
+  if (authError) return authError;
+  try {
+    const body = await c.req.json<{
+      transactionHash?: unknown;
+      amountUSDC?: unknown;
+      action?: unknown;
+    }>();
+    if (typeof body.transactionHash !== "string" || typeof body.amountUSDC !== "string") {
+      return c.json<ApiResponse>(
+        { success: false, error: "transactionHash and amountUSDC are required strings.", timestamp: new Date().toISOString() },
+        400
+      );
+    }
+    if (body.action !== "send" && body.action !== "receive") {
+      return c.json<ApiResponse>(
+        { success: false, error: "action must be send or receive.", timestamp: new Date().toISOString() },
+        400
+      );
+    }
+
+    const verified = await verifyArcUsdcTransfer({
+      transactionHash: body.transactionHash,
+      amountUSDC: body.amountUSDC,
+    });
+    const entry = appendVerifiedTransaction({ ...verified, action: body.action });
+    return c.json<ApiResponse>({
+      success: true,
+      data: { entry, explorerUrl: `https://explorer.testnet.arc.io/tx/${encodeURIComponent(verified.transactionHash)}` },
+      timestamp: new Date().toISOString(),
+    }, 201);
+  } catch (error) {
+    const alreadyRecorded = error instanceof Error && error.message.includes("already recorded as verified");
+    const status = error instanceof ArcTransactionVerificationError
+      ? error.statusCode
+      : alreadyRecorded
+        ? 409
+        : 500;
+    return c.json<ApiResponse>(
+      { success: false, error: error instanceof Error ? error.message : String(error), timestamp: new Date().toISOString() },
+      status
+    );
+  }
 });
 
 // ── Guardrails ─────────────────────────────────
