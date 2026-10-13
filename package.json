@@ -1,0 +1,29 @@
+{
+  "name": "agentvault",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tameion Treasury Agent – AI-powered autonomous business treasury on Arc/Circle",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspaces --if-present",
+    "dev:web": "npm run dev --workspace=apps/web",
+    "dev:api": "npm run dev --workspace=apps/api",
+    "demo": "node scripts/demo.mjs",
+    "arc:check": "node scripts/check-arc-testnet.mjs",
+    "build": "npm run build --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "typecheck": "tsc --build",
+    "clean": "rm -rf node_modules packages/*/dist apps/*/dist apps/*/.next"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "prettier": "^3.3.0",
+    "@types/node": "^22.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

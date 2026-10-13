@@ -1,0 +1,30 @@
+# dependencies
+node_modules/
+.pnp.*
+
+# build
+dist/
+.next/
+out/
+
+# env
+.env
+.env.local
+.env.*.local
+
+# ide
+.vscode/
+.idea/
+*.swp
+
+# os
+.DS_Store
+Thumbs.db
+
+# data
+*.db
+*.db-journal
+data/
+
+# logs
+*.log
