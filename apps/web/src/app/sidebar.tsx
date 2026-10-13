@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 
 const navigation = [
   { href: "/", label: "Overview", code: "01" },
@@ -11,8 +12,42 @@ const navigation = [
   { href: "/onboarding", label: "Business setup", code: "05" },
 ];
 
+type ApplicationMode = "demo" | "live" | "unknown";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+
 export default function Sidebar() {
   const pathname = usePathname();
+  const [mode, setMode] = useState<ApplicationMode>("unknown");
+
+  useEffect(() => {
+    let active = true;
+    const refreshMode = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/api/demo`, { cache: "no-store" });
+        const result = await response.json();
+        const apiMode = result.data?.mode;
+        if (
+          !response.ok ||
+          !result.success ||
+          (apiMode !== "demo" && apiMode !== "live") ||
+          response.headers.get("X-AgentVault-Mode") !== apiMode
+        ) {
+          throw new Error(result.error || "API mode status is unavailable.");
+        }
+        if (active) setMode(apiMode);
+      } catch (error) {
+        console.error("Unable to verify application mode:", error);
+        if (active) setMode("unknown");
+      }
+    };
+
+    void refreshMode();
+    const timer = window.setInterval(() => void refreshMode(), 5000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   return (
     <aside className="sidebar">
@@ -45,6 +80,23 @@ export default function Sidebar() {
           })}
         </ul>
       </nav>
+
+      <div className={`sidebar-mode sidebar-mode-${mode}`} role="status" aria-live="polite">
+        <strong>
+          {mode === "demo"
+            ? "DEMO MODE"
+            : mode === "live"
+              ? "LIVE MODE"
+              : "MODE UNKNOWN"}
+        </strong>
+        <span>
+          {mode === "demo"
+            ? "Synthetic data only"
+            : mode === "live"
+              ? "Real Arc testnet data"
+              : "API mode not verified"}
+        </span>
+      </div>
 
       <div className="sidebar-footer">
         <span className="network-indicator" />

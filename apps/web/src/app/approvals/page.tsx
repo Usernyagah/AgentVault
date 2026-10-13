@@ -23,7 +23,7 @@ interface Approval {
 
 export default function ApprovalsPage() {
   const [approvals, setApprovals] = useState<Approval[]>([]);
-  const [demoMode, setDemoMode] = useState(false);
+  const [demoMode, setDemoMode] = useState<boolean | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -34,16 +34,27 @@ export default function ApprovalsPage() {
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
       const [res, demoRes] = await Promise.all([
-        fetch(`${apiUrl}/api/approvals`),
-        fetch(`${apiUrl}/api/demo`),
+        fetch(`${apiUrl}/api/approvals`, { cache: "no-store" }),
+        fetch(`${apiUrl}/api/demo`, { cache: "no-store" }),
       ]);
       if (!res.ok || !demoRes.ok) throw new Error("Unable to load approval status.");
       const [json, demoJson] = await Promise.all([res.json(), demoRes.json()]);
       if (!json.success || !demoJson.success) throw new Error(json.error || demoJson.error || "Unable to load approvals.");
+      const mode = demoJson.data?.mode;
+      if (
+        (mode !== "demo" && mode !== "live") ||
+        res.headers.get("X-AgentVault-Mode") !== mode ||
+        demoRes.headers.get("X-AgentVault-Mode") !== mode ||
+        demoJson.data?.enabled !== (mode === "demo")
+      ) {
+        throw new Error("API mode changed while loading approvals. Refresh to avoid mixing Demo and Live records.");
+      }
       setApprovals(json.data || []);
-      setDemoMode(demoJson.data?.enabled === true);
+      setDemoMode(mode === "demo");
       setActionError(null);
     } catch {
+      setApprovals([]);
+      setDemoMode(null);
       setActionError("Could not connect to the API. Approval status may be out of date.");
     }
   }
@@ -51,9 +62,12 @@ export default function ApprovalsPage() {
   async function handleApproval(id: string, action: "approve" | "reject") {
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
-      const response = await fetch(`${apiUrl}/api/approvals/${id}/${action}`, { method: "POST" });
+      const response = await fetch(`${apiUrl}/api/approvals/${id}/${action}`, { method: "POST", cache: "no-store" });
       const result = await response.json();
       if (!response.ok || !result.success) throw new Error(result.error || "Approval action failed.");
+      if (demoMode === null || response.headers.get("X-AgentVault-Mode") !== (demoMode ? "demo" : "live")) {
+        throw new Error("Application mode changed; refusing to display a potentially mixed approval result.");
+      }
       await fetchApprovals();
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
@@ -74,15 +88,27 @@ export default function ApprovalsPage() {
         </button>
       </div>
 
-      {demoMode && (
-        <div className="audit-demo-note">
-          Demo Mode is active. Approve and reject actions update only the simulated
-          freelancer treasury; they never execute blockchain transactions.
-        </div>
-      )}
+      <div className={`mode-banner ${demoMode === null ? "mode-banner-unknown" : demoMode ? "mode-banner-demo" : "mode-banner-live"}`} role="status">
+        <strong>
+          {demoMode === null
+            ? "MODE UNKNOWN – Approvals Hidden"
+            : demoMode
+              ? "DEMO MODE – Synthetic Data"
+              : "LIVE MODE – Real Arc Testnet"}
+        </strong>
+        <span>
+          {demoMode === null
+            ? "The API mode could not be verified. No approval data is being shown."
+            : demoMode
+            ? "Approvals and displayed decisions are simulated. Approve/reject only changes the demo; no blockchain transaction is sent."
+            : "Approvals and displayed decisions are from the live application ledger. Approval can execute a real Circle Arc testnet transaction."}
+        </span>
+      </div>
       {actionError && <div className="ledger-error" role="alert">{actionError}</div>}
 
-      {approvals.length === 0 ? (
+      {demoMode === null ? (
+        <div className="card ledger-empty">Waiting for verified API mode before displaying approval records.</div>
+      ) : approvals.length === 0 ? (
         <div
           className="card"
           style={{

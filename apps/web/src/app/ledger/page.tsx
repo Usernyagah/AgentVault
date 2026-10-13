@@ -7,7 +7,7 @@ import { useState, useEffect } from "react";
 
 interface LedgerEntry {
   id: string;
-  recordType: "decision" | "execution";
+  recordType: "decision" | "execution" | "verified_transaction";
   relatedDecisionId?: string;
   sequenceNumber: number;
   timestamp: string;
@@ -41,7 +41,7 @@ const PAGE_SIZE = 100;
 export default function LedgerPage() {
   const [entries, setEntries] = useState<LedgerEntry[]>([]);
   const [chainValid, setChainValid] = useState<boolean | null>(null);
-  const [demoMode, setDemoMode] = useState(false);
+  const [demoMode, setDemoMode] = useState<boolean | null>(null);
   const [search, setSearch] = useState("");
   const [action, setAction] = useState("");
   const [offset, setOffset] = useState(0);
@@ -70,8 +70,8 @@ export default function LedgerPage() {
       if (action) params.set("action", action);
 
       const [ledgerRes, verifyRes] = await Promise.all([
-        fetch(`${apiUrl}/api/ledger?${params.toString()}`),
-        fetch(`${apiUrl}/api/ledger/verify`),
+        fetch(`${apiUrl}/api/ledger?${params.toString()}`, { cache: "no-store" }),
+        fetch(`${apiUrl}/api/ledger/verify`, { cache: "no-store" }),
       ]);
       if (!ledgerRes.ok || !verifyRes.ok) {
         throw new Error(`Ledger request failed (${ledgerRes.status}/${verifyRes.status}).`);
@@ -82,12 +82,25 @@ export default function LedgerPage() {
       ]);
       if (!ledgerJson.success) throw new Error(ledgerJson.error || "Unable to load audit records.");
       if (!verifyJson.success) throw new Error(verifyJson.error || "Unable to verify the audit chain.");
+      const demoMode = ledgerJson.data?.demoMode;
+      if (
+        typeof demoMode !== "boolean" ||
+        ledgerRes.headers.get("X-AgentVault-Mode") !== (demoMode ? "demo" : "live") ||
+        verifyRes.headers.get("X-AgentVault-Mode") !== (demoMode ? "demo" : "live") ||
+        verifyJson.data?.demoMode !== demoMode
+      ) {
+        throw new Error("API mode changed while loading the ledger. Refresh to avoid mixing Demo and Live records.");
+      }
 
       setEntries(ledgerJson.data?.entries ?? []);
       setTotal(ledgerJson.data?.total ?? 0);
       setChainValid(verifyJson.data?.valid ?? null);
-      setDemoMode(verifyJson.data?.demoMode === true);
+      setDemoMode(demoMode);
     } catch (error) {
+      setEntries([]);
+      setTotal(0);
+      setChainValid(null);
+      setDemoMode(null);
       setLoadError(error instanceof Error ? error.message : String(error));
     } finally {
       setLoading(false);
@@ -123,14 +136,37 @@ export default function LedgerPage() {
               Chain {chainValid ? "Valid ✓" : "BROKEN ✗"}
             </span>
           )}
-          {demoMode && <span className="demo-pill">SIMULATED · NOT SIGNED</span>}
+          <span className={`mode-chip ${demoMode === null ? "mode-banner-unknown" : demoMode ? "mode-chip-demo" : "mode-chip-live"}`}>
+            {demoMode === null
+              ? "MODE UNKNOWN"
+              : demoMode
+                ? "DEMO · SIMULATED · NOT SIGNED"
+                : "LIVE · SIGNED LEDGER"}
+          </span>
           <button className="btn btn-ghost" onClick={() => void fetchLedger()} disabled={loading}>
             {loading ? "Loading…" : "Refresh"}
           </button>
         </div>
       </div>
 
-      {demoMode && (
+      <div className={`mode-banner ${demoMode === null ? "mode-banner-unknown" : demoMode ? "mode-banner-demo" : "mode-banner-live"}`} role="status">
+        <strong>
+          {demoMode === null
+            ? "MODE UNKNOWN – Ledger Hidden"
+            : demoMode
+              ? "DEMO MODE – Synthetic Data"
+              : "LIVE MODE – Real Arc Testnet"}
+        </strong>
+        <span>
+          {demoMode === null
+            ? "The API mode could not be verified. No ledger data is being shown."
+            : demoMode
+            ? "Every record below is simulated. Hashes and signatures are placeholders; no transaction was sent on-chain."
+            : "Records below are from the persistent signed application ledger. Transaction hashes are included only when available."}
+        </span>
+      </div>
+
+      {demoMode === true && (
         <div className="audit-demo-note">
           Demo Mode is showing synthetic sample records. Their signatures and hashes
           are placeholders; no transaction was sent on-chain.
@@ -192,7 +228,9 @@ export default function LedgerPage() {
                     >
                       {entry.action.replaceAll("_", " ")}
                     </span>
-                    <span className="ledger-record-type">{entry.recordType}</span>
+                    <span className="ledger-record-type">
+                      {entry.recordType === "verified_transaction" ? "verified real transaction" : entry.recordType}
+                    </span>
                     <span className="ledger-amount">${entry.amountUSDC}</span>
                     <time className="text-sm text-muted" dateTime={entry.timestamp}>
                       {new Date(entry.timestamp).toLocaleString()}

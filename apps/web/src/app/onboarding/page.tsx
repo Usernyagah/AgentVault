@@ -272,7 +272,7 @@ export default function OnboardingPage() {
           <section className="onboarding-section">
             <div className="onboarding-section-heading">
               <span className="step-number">02</span>
-              <div><h2>Set business rules</h2><p>Payroll day prompts the forecast; the reserve percentage and borrow cap are enforced guardrails.</p></div>
+              <div><h2>Set business rules</h2><p>Payroll day prompts the forecast and the reserve percentage is enforced. Borrowing is disabled; its adapter is not verified.</p></div>
             </div>
             <form className="card onboarding-rules-form" onSubmit={(event) => void saveRules(event)}>
               <label className="onboarding-field">
@@ -286,9 +286,9 @@ export default function OnboardingPage() {
                 <span>Payments and investments are blocked if the reserve wallet falls below this target or the configured minimum floor.</span>
               </label>
               <label className="onboarding-field">
-                Maximum single borrow (USDC)
-                <input type="number" min={0} step="0.01" required value={maxBorrowAmount} onChange={(event) => setMaxBorrowAmount(Number(event.target.value))} />
-                <span>This is a hard per-borrow limit, in addition to the daily borrowing cap.</span>
+                Maximum single borrow (USDC) · inactive
+                <input type="number" min={0} step="0.01" value={maxBorrowAmount} disabled readOnly />
+                <span>Coming soon – adapter only. This saved value does not enable borrowing or protect an active borrow flow.</span>
               </label>
               <button className="btn btn-primary" disabled={busy}>Save business rules</button>
             </form>
