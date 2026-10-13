@@ -203,5 +203,5 @@ export interface DashboardSummary {
   recentDecisions: DecisionRecord[];
   forecast: CashFlowForecast;
   agentStatus: "idle" | "thinking" | "executing" | "awaiting_approval";
-  demoMode?: boolean;
+  demoMode: boolean;
 }
