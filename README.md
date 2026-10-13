@@ -12,18 +12,25 @@ tamper-evident signed decision ledger.
 
 ## What to try
 
-- **Treasury dashboard** — balances, USYC, outstanding loans, and the
-  seven-day cash-flow forecast.
+- **Treasury dashboard** — Circle wallet balances, decision activity, and the
+  seven-day cash-flow forecast. USYC is labeled experimental; borrowing is
+  disabled.
 - **Agent chat and decisions** — ask for an explanation or run an evaluation.
-  Configure an OpenAI key for LLM-backed chat.
+  Configure an OpenAI key for LLM-backed decisions. Supported live actions are
+  USDC transfers; decisions and execution outcomes are written to the signed
+  audit ledger.
 - **Approvals** — inspect and approve/reject eligible pending actions.
 - **Audit ledger** — search decisions and execution outcomes, inspect their
   signatures/hash links, and verify the chain.
 - **Onboarding** — connect or create a Circle Arc testnet wallet, save payroll
-  day/reserve/borrow rules, and issue expiring invite links.
+  day/reserve settings, and issue expiring invite links. The legacy borrow limit
+  is inactive and does not enable borrowing.
 - **Demo Mode** — seeded freelancer balances, invoices, forecast, decisions,
   and an approval. All demo operations are in-memory simulations; records are
-  explicitly unsigned and do not touch Circle or the production ledger.
+  explicitly unsigned and do not touch Circle or the production ledger. A
+  persistent mode indicator and page banners label data as simulated or live.
+  API responses include `X-AgentVault-Mode`; the dashboard withholds data if
+  its API responses disagree about the current mode.
 
 ## Architecture
 
@@ -58,10 +65,10 @@ The repository is an npm workspace:
    obligations. Forecast inflows are currently zero because invoice/receivable
    data is not integrated. Demo Mode has a separate illustrative forecast with
    seeded client receipts and expenses.
-3. For a proposed movement, policy checks enforce configured spend, reserve,
-   borrow, and approval constraints. When `OPENAI_API_KEY` is configured, the
-   LLM can propose and explain an action; it cannot bypass checks enforced by
-   tool implementations. Without a key, chat remains in scaffold mode.
+3. Agent decisions use OpenAI tool-calling when `OPENAI_API_KEY` is configured.
+   The LLM can propose and explain supported actions, but cannot bypass spend,
+   reserve, or approval checks enforced by tool implementations. Borrowing is
+   disabled. Without a key, the agent refuses to make or execute decisions.
 4. Before execution, the agent appends a human-readable decision record with
    timestamp, observed USDC/USYC balances, forecast, reasoning, applied rule,
    action, and signing metadata. A hash-chain link and Ed25519 signature make
@@ -83,14 +90,17 @@ independently.
 | Circle Developer-Controlled Wallets | Creates wallets on `ARC-TESTNET`, reads balances, and submits USDC transfers via Circle's SDK. Requires Circle API credentials, a wallet set, and the Circle USDC token ID. |
 | Arc testnet | Wallet operations check the Circle wallet's blockchain. The RPC preflight checks the configured JSON-RPC endpoint reports chain ID `5042002`. |
 | Circle Gateway | Optional configured balance query. It is not a CCTP bridge and does not transfer funds. |
-| USYC | Contract execution is gated on explicitly configured contract addresses and compatible ERC-4626 behavior. No turnkey Arc USYC vault is provisioned by this repository. |
-| Borrowing | Capacity reads and execution require a compatible, deployed lending pool and explicit configuration. No pool is deployed or provisioned here. |
+| USYC | **Experimental / not fully verified on testnet.** Save/redeem calls use an ERC-4626-shaped adapter and require a separately configured vault. No turnkey Arc USYC vault is provisioned or validated by this repository; do not treat this as a supported yield product. |
+| Borrowing | **Coming soon – adapter only.** No borrow tool is exposed to the agent, and approval cannot execute a borrow. No compatible pool is deployed or validated here. |
 | CCTP / Paymaster | Not implemented as a cross-chain bridge or gas-sponsored flow. Transfers currently specify a Circle fee level; do not describe this as gasless. |
 | Invoices | Local invoice/payment-link records are a prototype; no payment processor or automatic on-chain invoice monitoring is connected. |
 
-Do not enable contract-gated actions using guessed contract addresses. Verify
-the deployed contract, ABI, and token decimals independently before configuring
-them.
+This project currently demonstrates Circle Arc testnet USDC transfers, LLM
+tool-calling agent decisions, and signed audit logging. USYC save/redeem is
+experimental and not fully verified; borrowing, bridging, and gas sponsorship
+are not supported live features. Do not enable contract-gated actions using
+guessed contract addresses. Verify deployed contracts, ABIs, and token
+decimals independently before configuring any experimental adapter.
 
 ## Run the demo
 
@@ -164,7 +174,7 @@ Set values in your ignored local `.env` (never commit secrets):
 | `CIRCLE_USDC_TOKEN_ID` | Circle token identifier used for USDC transfers |
 | `TREASURY_WALLET_ID`, `OPERATIONS_WALLET_ID`, `RESERVES_WALLET_ID` | Wallet IDs used by the agent |
 | `ARC_RPC_URL`, `ARC_CHAIN_ID` | Arc JSON-RPC endpoint and expected chain (`5042002`) |
-| `OPENAI_API_KEY` | Optional LLM-backed agent reasoning |
+| `OPENAI_API_KEY` | Required for agent decisions and actions |
 | `ONBOARDING_ADMIN_TOKEN` | Random token of at least 32 characters for onboarding administration |
 
 Create an onboarding admin token:
@@ -179,12 +189,12 @@ credentials, Arc testnet wallet IDs, permissions, and funding are verified.
 
 ## Onboarding and deployment warning
 
-Onboarding saves payroll day, reserve percentage, and maximum borrow rules.
-The reserve and borrow limits are used by agent guardrails; payroll day is a
-reminder because payroll amounts are not configured. Invites are manually
-shared, single-use links that expire after seven days. Invitees consent before
-registration; the app stores profile/activity metrics and token hashes, not
-raw invite tokens.
+Onboarding saves payroll day and reserve percentage. A legacy maximum borrow
+value remains stored for compatibility but is inactive: borrowing is disabled
+in the agent and approval flow. Payroll day is a reminder because payroll
+amounts are not configured. Invites are manually shared, single-use links that
+expire after seven days. Invitees consent before registration; the app stores
+profile/activity metrics and token hashes, not raw invite tokens.
 
 Invite registration and its activity token are **not authentication**. The
 existing financial API and dashboard do not enforce team login or per-user
@@ -218,7 +228,19 @@ Useful endpoints:
 | `POST` | `/api/approvals/:id/approve` or `/reject` | Human decision |
 | `GET` | `/api/ledger` | Query decision and execution records |
 | `GET` | `/api/ledger/verify` | Verify signatures and hash-chain integrity |
+| `GET` | `/api/traction` | List only Arc-confirmed real transaction activity |
+| `GET` | `/api/traction/summary?format=markdown` or `?format=json` | Export submission-ready real-activity summary |
+| `POST` | `/api/traction/verify` | Verify and append a manually submitted Arc USDC transfer |
 | `GET`, `POST` | `/api/demo` | Read or toggle simulated Demo Mode |
+
+Manual traction verification requires `Authorization: Bearer <ONBOARDING_ADMIN_TOKEN>`.
+The API checks the Arc testnet chain ID, a successful transaction receipt, and a
+matching event from the configured `ARC_TESTNET_USDC_ADDRESS`; its timestamp
+comes from the confirmed block. Send/receive is the operator's classification,
+while the ledger also retains the on-chain transfer addresses. Duplicate
+transaction logs are rejected. Traction is withheld in Demo Mode, and the
+summary contains only confirmed Circle executions or manually verified Arc
+USDC transfers.
 
 Ledger queries support `action`, `q`, `since`, `until`, `limit` (1–500), and
 `offset`, for example:
