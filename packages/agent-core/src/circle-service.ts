@@ -13,7 +13,18 @@ import {
   initiateDeveloperControlledWalletsClient,
   type CircleDeveloperControlledWalletsClient,
 } from "@circle-fin/developer-controlled-wallets";
-import { createPublicClient, formatUnits, http, parseUnits, type Address } from "viem";
+import {
+  createPublicClient,
+  decodeEventLog,
+  formatUnits,
+  http,
+  isAddress,
+  keccak256,
+  parseUnits,
+  toBytes,
+  type Address,
+  type Hash,
+} from "viem";
 
 // ── Configuration ──────────────────────────────
 
@@ -41,10 +52,42 @@ export interface UnifiedGatewayBalance {
 let circleConfig: CircleConfig | null = null;
 let circleClient: CircleDeveloperControlledWalletsClient | null = null;
 
+const ARC_TESTNET_EXPLORER_URL = "https://explorer.testnet.arc.io";
+const ARC_TESTNET_CHAIN_ID = 5_042_002;
+const TRANSFER_CONFIRMATION_TIMEOUT_MS = 60_000;
+const usdcTransferAbi = [{
+  type: "event",
+  name: "Transfer",
+  inputs: [
+    { indexed: true, name: "from", type: "address" },
+    { indexed: true, name: "to", type: "address" },
+    { indexed: false, name: "value", type: "uint256" },
+  ],
+}] as const;
+const usdcTransferTopic = keccak256(toBytes("Transfer(address,address,uint256)"));
+
+export class ArcTransactionVerificationError extends Error {
+  constructor(message: string, readonly statusCode: 422 | 502 | 503) {
+    super(message);
+    this.name = "ArcTransactionVerificationError";
+  }
+}
+
+export interface VerifiedArcUsdcTransfer {
+  transactionHash: string;
+  amountUSDC: string;
+  timestamp: string;
+  chainId: number;
+  blockNumber: bigint;
+  logIndex: number;
+  from: string;
+  to: string;
+}
+
 export function initCircle(config: CircleConfig): void {
   circleConfig = config;
   circleClient =
-    config.apiKey && config.entitySecret
+    config.apiKey?.trim() && config.entitySecret?.trim()
       ? initiateDeveloperControlledWalletsClient({
           apiKey: config.apiKey,
           entitySecret: config.entitySecret,
@@ -66,15 +109,46 @@ function ensureClient(): {
 } {
   const config = ensureInitialized();
   if (!circleClient) {
-    throw new Error("Circle API key and entity secret are required for wallet operations.");
+    const missing = [
+      !config.apiKey?.trim() ? "CIRCLE_API_KEY" : undefined,
+      !config.entitySecret?.trim() ? "CIRCLE_ENTITY_SECRET" : undefined,
+    ].filter((value): value is string => value !== undefined);
+    if (missing.length === 0) {
+      throw new Error("Circle wallet client could not be initialized. Verify Circle credentials and restart the API.");
+    }
+    throw new Error(
+      `Circle wallet operations require ${missing.join(" and ")}. Configure the missing credential${missing.length > 1 ? "s" : ""} and restart the API.`
+    );
   }
   return { config, client: circleClient };
 }
 
 function mapTransactionStatus(state: string): Transaction["status"] {
   if (state === "CONFIRMED" || state === "COMPLETE") return "confirmed";
-  if (state === "FAILED" || state === "DENIED" || state === "CANCELLED") return "failed";
+  if (["FAILED", "DENIED", "CANCELLED", "STUCK"].includes(state)) return "failed";
   return "pending";
+}
+
+export interface CircleTransferResult extends Transaction {
+  success: boolean;
+  finalStatus: string;
+  explorerUrl?: string;
+  error?: string;
+}
+
+function getExplorerTransactionUrl(txHash?: string): string | undefined {
+  return txHash
+    ? `${ARC_TESTNET_EXPLORER_URL}/tx/${encodeURIComponent(txHash)}`
+    : undefined;
+}
+
+function getCircleTransactionError(transaction: {
+  errorReason?: string;
+  errorDetails?: string;
+}): string | undefined {
+  return [transaction.errorReason, transaction.errorDetails]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .join(": ") || undefined;
 }
 
 async function executeContractTransaction(params: {
@@ -112,6 +186,138 @@ function getWalletPublicClient() {
   const config = ensureInitialized();
   if (!config.arcRpcUrl) throw new Error("ARC_RPC_URL is required for lending pool reads.");
   return createPublicClient({ transport: http(config.arcRpcUrl) });
+}
+
+export async function verifyArcUsdcTransfer(params: {
+  transactionHash: string;
+  amountUSDC: string;
+}): Promise<VerifiedArcUsdcTransfer> {
+  const config = ensureInitialized();
+  if (!config.arcRpcUrl?.trim()) {
+    throw new ArcTransactionVerificationError("ARC_RPC_URL is required to verify Arc transactions.", 503);
+  }
+  if (!config.usdcContractAddress || !isAddress(config.usdcContractAddress)) {
+    throw new ArcTransactionVerificationError(
+      "Set ARC_TESTNET_USDC_ADDRESS to the Arc testnet USDC contract address before verifying transactions.",
+      503
+    );
+  }
+  if (!/^0x[0-9a-fA-F]{64}$/.test(params.transactionHash)) {
+    throw new ArcTransactionVerificationError("Transaction hash must be a 32-byte 0x-prefixed hex hash.", 422);
+  }
+  if (!/^(?:0|[1-9]\d*)(?:\.\d{1,6})?$/.test(params.amountUSDC)) {
+    throw new ArcTransactionVerificationError("USDC amount must be positive and use no more than 6 decimal places.", 422);
+  }
+
+  const amountUnits = parseUnits(params.amountUSDC, 6);
+  if (amountUnits <= 0n) {
+    throw new ArcTransactionVerificationError("USDC amount must be greater than zero.", 422);
+  }
+
+  const client = createPublicClient({ transport: http(config.arcRpcUrl) });
+  let chainId: number;
+  try {
+    chainId = await client.getChainId();
+  } catch (error) {
+    throw new ArcTransactionVerificationError(
+      `Unable to reach the configured Arc RPC endpoint: ${error instanceof Error ? error.message : String(error)}`,
+      502
+    );
+  }
+  if (chainId !== ARC_TESTNET_CHAIN_ID) {
+    throw new ArcTransactionVerificationError(
+      `Configured RPC is on chain ${chainId}; Arc testnet chain ${ARC_TESTNET_CHAIN_ID} is required.`,
+      503
+    );
+  }
+
+  const hash = params.transactionHash as Hash;
+  let receipt;
+  try {
+    receipt = await client.getTransactionReceipt({ hash });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    if (/receipt.*not found|transaction.*not found/i.test(detail)) {
+      throw new ArcTransactionVerificationError(
+        `No confirmed Arc receipt was found for ${params.transactionHash}; it may be pending, missing, or on another network.`,
+        422
+      );
+    }
+    throw new ArcTransactionVerificationError(
+      `Unable to retrieve a confirmed receipt for ${params.transactionHash}: ${detail}`,
+      502
+    );
+  }
+  if (receipt.status !== "success") {
+    throw new ArcTransactionVerificationError(`Arc transaction ${params.transactionHash} did not succeed.`, 422);
+  }
+
+  let block;
+  try {
+    block = await client.getBlock({ blockNumber: receipt.blockNumber });
+  } catch (error) {
+    throw new ArcTransactionVerificationError(
+      `The transaction succeeded, but its Arc block timestamp could not be verified: ${error instanceof Error ? error.message : String(error)}`,
+      502
+    );
+  }
+  const blockTimeSeconds = Number(block.timestamp);
+  if (!Number.isSafeInteger(blockTimeSeconds) || blockTimeSeconds > Number.MAX_SAFE_INTEGER / 1_000) {
+    throw new ArcTransactionVerificationError("Arc returned an invalid block timestamp.", 502);
+  }
+
+  const usdcAddress = config.usdcContractAddress.toLowerCase();
+  const usdcTransfers = receipt.logs.flatMap((log) => {
+    if (
+      log.address.toLowerCase() !== usdcAddress ||
+      log.topics[0]?.toLowerCase() !== usdcTransferTopic.toLowerCase()
+    ) {
+      return [];
+    }
+    const decoded = decodeEventLog({
+      abi: usdcTransferAbi,
+      eventName: "Transfer",
+      data: log.data,
+      topics: log.topics,
+    });
+    return [{
+      from: decoded.args.from,
+      to: decoded.args.to,
+      value: decoded.args.value,
+      logIndex: log.logIndex,
+    }];
+  });
+
+  if (usdcTransfers.length === 0) {
+    throw new ArcTransactionVerificationError(
+      `Arc transaction ${params.transactionHash} contains no USDC Transfer event.`,
+      422
+    );
+  }
+  if (usdcTransfers.length > 1) {
+    throw new ArcTransactionVerificationError(
+      `Arc transaction ${params.transactionHash} contains multiple USDC transfers and cannot be recorded as one unambiguous traction item.`,
+      422
+    );
+  }
+
+  const transfer = usdcTransfers[0]!;
+  if (transfer.value !== amountUnits) {
+    throw new ArcTransactionVerificationError(
+      `Arc transaction ${params.transactionHash} transferred ${formatUnits(transfer.value, 6)} USDC, not the entered amount ${params.amountUSDC}.`,
+      422
+    );
+  }
+  return {
+    transactionHash: hash,
+    amountUSDC: formatUnits(amountUnits, 6),
+    timestamp: new Date(blockTimeSeconds * 1_000).toISOString(),
+    chainId,
+    blockNumber: receipt.blockNumber,
+    logIndex: transfer.logIndex,
+    from: transfer.from,
+    to: transfer.to,
+  };
 }
 
 // ── Wallet Operations ──────────────────────────
@@ -218,7 +424,7 @@ export async function createWallet(
   };
 }
 
-// ── Transfer (via Paymaster for gasless) ───────
+// ── USDC Transfer ─────────────────────────────
 
 export async function transferUSDC(params: {
   fromWalletId: string;
@@ -226,12 +432,20 @@ export async function transferUSDC(params: {
   amount: string;
   category: TxCategory;
   memo?: string;
-}): Promise<Transaction> {
+}): Promise<CircleTransferResult> {
   const { config, client } = ensureClient();
   if (!config.usdcTokenId) throw new Error("CIRCLE_USDC_TOKEN_ID is required to send USDC.");
+  if (!params.fromWalletId?.trim()) {
+    throw new Error("An operations Circle wallet ID is required to send USDC. Configure OPERATIONS_WALLET_ID.");
+  }
   const wallet = await client.getWallet({ id: params.fromWalletId });
-  if (wallet.data?.wallet?.blockchain !== Blockchain.ArcTestnet) {
-    throw new Error("USDC transfers are restricted to ARC-TESTNET wallets.");
+  if (!wallet.data?.wallet) {
+    throw new Error(`Circle did not return configured operations wallet ${params.fromWalletId}. Check OPERATIONS_WALLET_ID.`);
+  }
+  if (wallet.data.wallet.blockchain !== Blockchain.ArcTestnet) {
+    throw new Error(
+      `Operations wallet ${params.fromWalletId} is on ${wallet.data.wallet.blockchain}, not ARC-TESTNET.`
+    );
   }
   const response = await client.createTransaction({
     walletId: params.fromWalletId,
@@ -240,24 +454,103 @@ export async function transferUSDC(params: {
     destinationAddress: params.toAddress,
     fee: { type: "level", config: { feeLevel: "MEDIUM" } },
   });
-  const transaction = response.data;
-  if (!transaction?.id) throw new Error("Circle did not return a transfer transaction ID.");
-  const details = await client.getTransaction({ id: transaction.id });
+  const submitted = response.data;
+  if (!submitted?.id) throw new Error("Circle accepted no transfer: it did not return a transaction ID.");
+
+  let transaction;
+  let statusError: string | undefined;
+  const signal = AbortSignal.timeout(TRANSFER_CONFIRMATION_TIMEOUT_MS);
+  try {
+    const completed = await client.getTransaction({
+      id: submitted.id,
+      waitForState: "COMPLETE",
+      pollingInterval: 1_000,
+      signal,
+    });
+    transaction = completed.data?.transaction;
+  } catch (error) {
+    statusError = error instanceof Error ? error.message : String(error);
+    try {
+      const latest = await client.getTransaction({ id: submitted.id });
+      transaction = latest.data?.transaction;
+    } catch (lookupError) {
+      throw new Error(
+        `Transfer ${submitted.id} was submitted, but Circle could not confirm its status. ` +
+          `Polling error: ${statusError}. Status lookup error: ${lookupError instanceof Error ? lookupError.message : String(lookupError)}`
+      );
+    }
+
+    if (
+      transaction &&
+      mapTransactionStatus(transaction.state) === "pending" &&
+      !signal.aborted
+    ) {
+      throw new Error(
+        `Transfer ${submitted.id} was submitted, but Circle status polling failed: ${statusError}.`
+      );
+    }
+  }
+
+  if (!transaction) {
+    throw new Error(`Circle returned no transaction details for submitted transfer ${submitted.id}.`);
+  }
+  if (mapTransactionStatus(transaction.state) === "confirmed" && !transaction.txHash) {
+    try {
+      const withHash = await client.getTransaction({
+        id: submitted.id,
+        waitForTxHash: true,
+        pollingInterval: 1_000,
+        signal: AbortSignal.timeout(10_000),
+      });
+      transaction = withHash.data?.transaction;
+    } catch (error) {
+      throw new Error(
+        `Transfer ${submitted.id} reached ${transaction.state}, but Circle did not provide its transaction hash: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+  if (!transaction) {
+    throw new Error(`Circle returned no transaction details for submitted transfer ${submitted.id}.`);
+  }
+
+  const finalStatus = transaction.state || "UNKNOWN";
+  const status = mapTransactionStatus(finalStatus);
+  if (status === "confirmed" && !transaction.txHash) {
+    throw new Error(
+      `Transfer ${submitted.id} reached ${finalStatus}, but Circle returned no transaction hash. Check this transaction in Circle before retrying.`
+    );
+  }
+  const error = getCircleTransactionError(transaction) ??
+    (status === "failed" ? statusError : undefined) ??
+    (status === "pending" && signal.aborted
+      ? `Circle did not reach a final state within ${TRANSFER_CONFIRMATION_TIMEOUT_MS / 1000} seconds.`
+      : undefined);
+  const txHash = transaction.txHash;
 
   return {
-    id: transaction.id,
+    id: submitted.id,
     walletId: params.fromWalletId,
     direction: "outbound" as TxDirection,
-    status: mapTransactionStatus(transaction.state),
+    status,
+    success: status === "confirmed",
+    finalStatus,
     category: params.category,
     amountUSDC: params.amount,
     counterparty: params.toAddress,
-    txHash: details.data?.transaction?.txHash,
+    txHash,
+    explorerUrl: getExplorerTransactionUrl(txHash),
+    error,
     memo: params.memo,
-    createdAt: new Date().toISOString(),
+    createdAt: transaction.createDate ?? new Date().toISOString(),
+    confirmedAt: status === "confirmed"
+      ? transaction.firstConfirmDate ?? transaction.updateDate
+      : undefined,
   };
 }
 
+// EXPERIMENTAL / NOT FULLY VERIFIED ON TESTNET:
+// These ERC-4626-shaped calls require an independently verified vault/ABI and
+// successful end-to-end Arc testing before they can be represented as supported.
 // ── USYC (Yield) Operations ───────────────────
 
 export async function depositToUSYC(
@@ -379,6 +672,9 @@ export async function getBorrowCapacity(walletId: string): Promise<{
   };
 }
 
+// COMING SOON — ADAPTER ONLY:
+// This adapter is not exposed to the agent and must not be treated as a working
+// borrow flow until a deployed pool is independently verified and tested.
 // ── Borrow (via DeFi Lending on Arc) ──────────
 
 export async function borrowUSDC(

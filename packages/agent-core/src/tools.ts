@@ -14,7 +14,6 @@ import {
   SendUsdcParams,
   SaveToUsycParams,
   RedeemUsycParams,
-  BorrowUsdcParams,
   GenerateInvoiceParams,
   RecordIncomingPaymentParams,
   RecordDecisionParams,
@@ -26,7 +25,6 @@ import {
   transferUSDC,
   depositToUSYC,
   redeemFromUSYC,
-  borrowUSDC,
 } from "./circle-service.js";
 import {
   checkGuardrails,
@@ -355,9 +353,9 @@ export async function toolForecastCashflow(
 
   const recommendation =
     daysUntilShortfall != null
-      ? "Consider redeeming USYC or borrowing to cover upcoming shortfall."
+      ? "A cash shortfall is forecast. Review verified liquid funds and obligations; USYC redemption is experimental and borrowing is disabled."
       : availableToInvest > guardrails.autoInvestThreshold
-        ? `Surplus detected — up to $${availableToInvest.toFixed(2)} may be invested while preserving the reserve and near-term cash needs.`
+        ? `Surplus detected — up to $${availableToInvest.toFixed(2)} is above the configured reserve and near-term cash needs. USYC is experimental and not fully verified on testnet.`
         : "Maintain current allocation.";
 
   const forecast: CashFlowForecast = {
@@ -462,12 +460,20 @@ export async function toolSendUsdc(
   ctx: ToolContext
 ): Promise<ToolResult> {
   const params = SendUsdcParams.parse(rawParams);
+  const operationsWalletId = ctx.config.wallets.operations?.trim();
+  if (!operationsWalletId) {
+    return {
+      success: false,
+      data: { error: "OPERATIONS_WALLET_ID is not configured." },
+      explanation: "USDC transfer is unavailable: configure OPERATIONS_WALLET_ID with a Circle Arc testnet wallet.",
+    };
+  }
   const authorization = findDecisionAuthorization(ctx, {
     action: "send",
     amountUSDC: params.amount,
     category: params.category,
     toAddress: params.toAddress,
-    fromWallet: ctx.config.wallets.operations,
+    fromWallet: operationsWalletId,
   });
   if (!authorization) return decisionRequired();
   const movementCheck = checkMovementAuthorization(authorization, parseFloat(params.amount), params.toAddress);
@@ -490,31 +496,49 @@ export async function toolSendUsdc(
   // Execute the transfer
   authorization.consumed = true;
   const tx = await transferUSDC({
-    fromWalletId: ctx.config.wallets.operations,
+    fromWalletId: operationsWalletId,
     toAddress: params.toAddress,
     amount: params.amount,
     category: params.category,
     memo: params.memo,
   });
+  const actionTaken = tx.status === "confirmed"
+    ? `Transfer confirmed on Arc testnet at Circle status ${tx.finalStatus}.`
+    : tx.status === "failed"
+      ? `Transfer failed on Arc testnet at Circle status ${tx.finalStatus}.${tx.error ? ` ${tx.error}` : ""}`
+      : `Transfer submitted but not yet confirmed; Circle status is ${tx.finalStatus}. Do not resubmit while this transaction is pending.`;
   appendDecisionOutcome(authorization.decisionId, {
-    actionTaken: `Transfer ${tx.id} submitted with status ${tx.status}.`,
+    actionTaken,
     transactionHash: tx.txHash,
     transactionId: tx.id,
   });
 
   return {
-    success: true,
+    success: tx.status !== "failed",
     data: {
+      success: tx.success,
       transactionId: tx.id,
       status: tx.status,
+      finalStatus: tx.finalStatus,
       amount: params.amount,
       toAddress: params.toAddress,
       txHash: tx.txHash,
+      explorerUrl: tx.explorerUrl,
+      error: tx.error,
     },
-    explanation: `Decision ${authorization.decisionId}: ${authorization.reasoning} Sent $${params.amount} USDC to ${params.toAddress} (${params.category}). Transaction ${tx.id} is ${tx.status}.`,
+    explanation:
+      `Decision ${authorization.decisionId}: ${authorization.reasoning} ` +
+      (tx.status === "confirmed"
+        ? `Sent $${params.amount} USDC to ${params.toAddress} (${params.category}); transaction ${tx.id} is confirmed (${tx.finalStatus}).${tx.txHash ? ` Hash: ${tx.txHash}.` : ""}${tx.explorerUrl ? ` Explorer: ${tx.explorerUrl}` : ""}`
+        : tx.status === "failed"
+          ? `Transfer of $${params.amount} USDC to ${params.toAddress} failed (${tx.finalStatus}).${tx.error ? ` ${tx.error}` : ""}${tx.txHash ? ` Hash: ${tx.txHash}.` : ""}${tx.explorerUrl ? ` Explorer: ${tx.explorerUrl}` : ""}`
+          : `Transfer of $${params.amount} USDC to ${params.toAddress} was submitted but remains pending (${tx.finalStatus}). Do not submit it again; check transaction ${tx.id}.${tx.txHash ? ` Hash: ${tx.txHash}.` : ""}${tx.explorerUrl ? ` Explorer: ${tx.explorerUrl}` : ""}${tx.error ? ` ${tx.error}` : ""}`),
   };
 }
 
+// EXPERIMENTAL / NOT FULLY VERIFIED ON TESTNET.
+// Keep this tool description and the dashboard warning visible; configuration
+// alone does not establish that a USYC vault or its ERC-4626 behavior is safe.
 // ── save_to_usyc ─────────────────────────────
 
 export async function toolSaveToUsyc(
@@ -612,40 +636,6 @@ export async function toolRedeemUsyc(
   };
 }
 
-// ── borrow_usdc ──────────────────────────────
-
-export async function toolBorrowUsdc(
-  rawParams: unknown,
-  ctx: ToolContext
-): Promise<ToolResult> {
-  const params = BorrowUsdcParams.parse(rawParams);
-  const walletId = ctx.config.wallets.treasury;
-  const authorization = findDecisionAuthorization(ctx, {
-    action: "borrow",
-    amountUSDC: params.amount,
-    category: "borrow",
-    fromWallet: "",
-    toWallet: walletId,
-  });
-  if (!authorization) return decisionRequired();
-  const movementCheck = checkMovementAuthorization(authorization, parseFloat(params.amount));
-  if (movementCheck) return movementCheck;
-
-  authorization.consumed = true;
-  const tx = await borrowUSDC(walletId, params.amount, params.reason);
-  appendDecisionOutcome(authorization.decisionId, {
-    actionTaken: `Borrowed $${params.amount} USDC with status ${tx.status}.`,
-    transactionHash: tx.txHash,
-    transactionId: tx.id,
-  });
-
-  return {
-    success: true,
-    data: { transactionId: tx.id, status: tx.status, amount: params.amount },
-    explanation: `Decision ${authorization.decisionId}: ${authorization.reasoning} Borrowed $${params.amount} USDC. Reason: ${params.reason}. TX: ${tx.id}.`,
-  };
-}
-
 // ── record_decision ──────────────────────────
 
 export async function toolRecordDecision(
@@ -728,9 +718,7 @@ export async function toolRecordDecision(
         : undefined;
   const toWalletName = params.toWallet
     ? params.toWallet
-    : params.action === "borrow"
-      ? "treasury"
-      : params.action === "receive"
+    : params.action === "receive"
         ? "treasury"
         : undefined;
   const fromWalletId = fromWalletName
@@ -877,7 +865,6 @@ export type ToolName =
   | "send_usdc"
   | "save_to_usyc"
   | "redeem_usyc"
-  | "borrow_usdc"
   | "record_decision";
 
 const TOOL_MAP: Record<
@@ -891,7 +878,6 @@ const TOOL_MAP: Record<
   send_usdc: toolSendUsdc,
   save_to_usyc: toolSaveToUsyc,
   redeem_usyc: toolRedeemUsyc,
-  borrow_usdc: toolBorrowUsdc,
   record_decision: toolRecordDecision,
 };
 
@@ -919,7 +905,6 @@ export async function executeTool(
       send_usdc: "send",
       save_to_usyc: "invest_usyc",
       redeem_usyc: "redeem_usyc",
-      borrow_usdc: "borrow",
     };
     const expectedAction = movementActions[name as ToolName];
     const authorization = expectedAction

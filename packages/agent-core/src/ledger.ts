@@ -26,7 +26,7 @@ import { v4 as uuid } from "uuid";
 import type { DecisionAction, DecisionRecord } from "@agentvault/shared";
 
 export interface LedgerEntry extends DecisionRecord {
-  recordType: "decision" | "execution";
+  recordType: "decision" | "execution" | "verified_transaction";
   sequenceNumber: number;
   previousHash: string;
   hash: string;
@@ -35,6 +35,13 @@ export interface LedgerEntry extends DecisionRecord {
   transactionHash?: string;
   transactionId?: string;
   relatedDecisionId?: string;
+  verifiedRealUsage?: boolean;
+  verificationChainId?: number;
+  verificationBlockNumber?: string;
+  verificationLogIndex?: number;
+  verifiedAt?: string;
+  transferFrom?: string;
+  transferTo?: string;
 }
 
 export interface LedgerQuery {
@@ -301,6 +308,66 @@ export function appendDecisionOutcome(
 
   persist(entry);
   ledger.push(entry);
+  return cloneEntry(entry);
+}
+
+export function appendVerifiedTransaction(params: {
+  action: "send" | "receive";
+  amountUSDC: string;
+  transactionHash: string;
+  timestamp: string;
+  chainId: number;
+  blockNumber: bigint;
+  logIndex: number;
+  from: string;
+  to: string;
+}): LedgerEntry {
+  initialize();
+  const existing = ledger.find(
+    (entry) =>
+      entry.recordType === "verified_transaction" &&
+      entry.transactionHash?.toLowerCase() === params.transactionHash.toLowerCase()
+  );
+  if (existing) {
+    throw new Error(
+      `Arc transaction ${params.transactionHash} log ${params.logIndex} is already recorded as verified real usage.`
+    );
+  }
+
+  const keys = ensureSigningKeys();
+  const entry = signEntry({
+    id: uuid(),
+    timestamp: params.timestamp,
+    actionTaken: "Manually recorded after Arc testnet USDC Transfer event verification.",
+    balanceSeen: { treasury: "not captured", operations: "not captured", reserves: "not captured" },
+    balanceSeenUSYC: { treasury: "not captured", operations: "not captured", reserves: "not captured" },
+    forecast: "Not captured for this externally initiated transaction.",
+    reasoning: `A successful Arc testnet receipt contains a matching USDC transfer of $${params.amountUSDC} from ${params.from} to ${params.to}. Transaction type was classified as ${params.action} during manual verification.`,
+    ruleApplied: "verified_arc_testnet_transaction",
+    confidence: 1,
+    action: params.action,
+    amountUSDC: params.amountUSDC,
+    transactionHash: params.transactionHash,
+    toAddress: params.to,
+    withinDailyLimit: false,
+    requiresApproval: false,
+    recordType: "verified_transaction",
+    sequenceNumber: ledger.length,
+    previousHash: ledger.at(-1)?.hash ?? GENESIS_HASH,
+    verifiedRealUsage: true,
+    verificationChainId: params.chainId,
+    verificationBlockNumber: params.blockNumber.toString(),
+    verificationLogIndex: params.logIndex,
+    verifiedAt: new Date().toISOString(),
+    transferFrom: params.from,
+    transferTo: params.to,
+    signingKeyId: keys.keyId,
+    signingPublicKey: keys.publicKey,
+  });
+
+  persist(entry);
+  ledger.push(entry);
+  console.log(`[LEDGER] #${entry.sequenceNumber} verified Arc transaction ${entry.transactionHash}`);
   return cloneEntry(entry);
 }
 

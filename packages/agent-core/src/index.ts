@@ -9,7 +9,6 @@ export {
   SendUsdcParams,
   SaveToUsycParams,
   RedeemUsycParams,
-  BorrowUsdcParams,
   RecordDecisionParams,
   GenerateInvoiceParams,
   RecordIncomingPaymentParams,
@@ -27,7 +26,6 @@ export {
   toolSendUsdc,
   toolSaveToUsyc,
   toolRedeemUsyc,
-  toolBorrowUsdc,
   toolCreateInvoice,
   toolRecordIncomingPayment,
   toolRecordDecision,
@@ -40,6 +38,7 @@ export {
 export {
   appendDecision,
   appendDecisionOutcome,
+  appendVerifiedTransaction,
   getLedger,
   queryLedger,
   getDecisionById,
@@ -50,6 +49,18 @@ export {
   type LedgerQuery,
   type LedgerQueryResult,
 } from "./ledger.js";
+export {
+  verifyArcUsdcTransfer,
+  ArcTransactionVerificationError,
+  type VerifiedArcUsdcTransfer,
+} from "./circle-service.js";
+export {
+  getRealTractionTransactions,
+  buildTractionSummary,
+  formatTractionMarkdown,
+  type RealTractionTransaction,
+  type TractionSummary,
+} from "./traction.js";
 
 // Guardrails
 export {

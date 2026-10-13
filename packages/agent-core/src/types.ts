@@ -62,11 +62,11 @@ export const SaveToUsycParams = z.object({
   amount: z
     .string()
     .regex(/^\d+(\.\d{1,6})?$/, "Must be a valid USDC amount")
-    .describe("Amount of USDC to deposit into USYC for yield."),
+    .describe("EXPERIMENTAL: Amount of USDC to deposit into the configured USYC adapter. Not fully verified on Arc testnet; do not use with funds that cannot be risked."),
   fromWallet: z
     .enum(["treasury", "operations"])
     .default("treasury")
-    .describe("Which wallet to fund the USYC deposit from."),
+    .describe("Experimental adapter source wallet. USYC integration is not fully verified on Arc testnet."),
 });
 export type SaveToUsycParams = z.infer<typeof SaveToUsycParams>;
 
@@ -74,35 +74,22 @@ export const RedeemUsycParams = z.object({
   amount: z
     .string()
     .regex(/^\d+(\.\d{1,6})?$/, "Must be a valid USYC amount")
-    .describe("Amount of USYC to redeem back to USDC."),
+    .describe("EXPERIMENTAL: Amount of USYC to redeem using the configured adapter. Not fully verified on Arc testnet."),
   toWallet: z
     .enum(["treasury", "operations"])
     .default("treasury")
-    .describe("Which wallet receives the redeemed USDC."),
+    .describe("Experimental adapter destination wallet. USYC integration is not fully verified on Arc testnet."),
 });
 export type RedeemUsycParams = z.infer<typeof RedeemUsycParams>;
 
-export const BorrowUsdcParams = z.object({
-  amount: z
-    .string()
-    .regex(/^\d+(\.\d{1,6})?$/, "Must be a valid USDC amount")
-    .describe("Amount of USDC to borrow."),
-  reason: z
-    .string()
-    .min(10)
-    .max(500)
-    .describe("Mandatory explanation for why borrowing is needed."),
-});
-export type BorrowUsdcParams = z.infer<typeof BorrowUsdcParams>;
-
 export const RecordDecisionParams = z.object({
   action: z
-    .enum(["send", "receive", "invest_usyc", "redeem_usyc", "borrow", "repay", "bridge", "hold"])
-    .describe("The action type for this decision."),
+    .enum(["send", "receive", "invest_usyc", "redeem_usyc", "repay", "bridge", "hold"])
+    .describe("Supported actions: USDC transfers, experimental USYC adapter actions, or hold. Borrowing is disabled."),
   amount: z
     .string()
     .regex(/^\d+(\.\d{1,6})?$/, "Must be a valid USDC amount")
-    .describe("Amount involved in this decision."),
+    .describe("Amount involved. USYC actions are experimental; borrowing is disabled."),
   reasoning: z
     .string()
     .min(20)
@@ -135,7 +122,6 @@ export const RecordDecisionParams = z.object({
       "yield_deposit",
       "yield_withdrawal",
       "bridge",
-      "borrow",
       "repay",
       "internal_transfer",
     ] as const)
@@ -204,7 +190,6 @@ export const DecisionSchema = z.object({
     "receive",
     "invest_usyc",
     "redeem_usyc",
-    "borrow",
     "repay",
     "bridge",
     "hold",
@@ -227,7 +212,6 @@ export const DecisionSchema = z.object({
       "yield_deposit",
       "yield_withdrawal",
       "bridge",
-      "borrow",
       "repay",
       "internal_transfer",
     ] as const)
@@ -262,12 +246,6 @@ export const DecisionSchema = z.object({
   }
   if (decision.action === "redeem_usyc" && decision.toWallet === "reserves") {
     context.addIssue({ code: "custom", message: "Redemptions can only be sent to treasury or operations.", path: ["toWallet"] });
-  }
-  if (decision.action === "borrow" && decision.category && decision.category !== "borrow") {
-    context.addIssue({ code: "custom", message: "A borrow Decision requires the borrow category.", path: ["category"] });
-  }
-  if (decision.action === "borrow" && decision.toWallet && decision.toWallet !== "treasury") {
-    context.addIssue({ code: "custom", message: "Borrow proceeds must go to treasury.", path: ["toWallet"] });
   }
 });
 export type Decision = z.infer<typeof DecisionSchema>;
@@ -427,13 +405,13 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "save_to_usyc",
     description:
-      "Deposit idle USDC into USYC to earn yield. Use when treasury has surplus above the operating threshold.",
+      "EXPERIMENTAL / NOT FULLY VERIFIED ON TESTNET. USYC contract calls use an unverified adapter; this is not a supported or tested yield product. Do not execute or imply safety; only proceed if the user explicitly requests experimental testnet interaction.",
     parameters: {
       type: "object",
       properties: {
         amount: {
           type: "string",
-          description: "Amount of USDC to deposit into USYC.",
+          description: "EXPERIMENTAL / NOT FULLY VERIFIED ON TESTNET. USDC amount to pass to the unverified USYC adapter.",
         },
         fromWallet: {
           type: "string",
@@ -447,13 +425,13 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "redeem_usyc",
     description:
-      "Redeem USYC back to USDC when liquid funds are needed. Use when forecast shows upcoming shortfall.",
+      "EXPERIMENTAL / NOT FULLY VERIFIED ON TESTNET. USYC contract calls use an unverified adapter; this is not a supported or tested redemption flow. Do not execute or imply safety; only proceed if the user explicitly requests experimental testnet interaction.",
     parameters: {
       type: "object",
       properties: {
         amount: {
           type: "string",
-          description: "Amount of USYC to redeem.",
+          description: "EXPERIMENTAL / NOT FULLY VERIFIED ON TESTNET. USYC amount to pass to the unverified redemption adapter.",
         },
         toWallet: {
           type: "string",
@@ -465,28 +443,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
-    name: "borrow_usdc",
-    description:
-      "Borrow USDC when the forecast shows a cash shortfall that cannot be covered by existing balances or USYC redemption. Requires strong justification.",
-    parameters: {
-      type: "object",
-      properties: {
-        amount: {
-          type: "string",
-          description: "Amount of USDC to borrow.",
-        },
-        reason: {
-          type: "string",
-          description: "Mandatory explanation (min 10 chars) for why borrowing is needed.",
-        },
-      },
-      required: ["amount", "reason"],
-    },
-  },
-  {
     name: "record_decision",
     description:
-      "Record a structured Decision in the append-only audit ledger. You MUST call this BEFORE executing any money movement (send, save, redeem, borrow). The decision captures your reasoning, the rule applied, your confidence level, and the current balance snapshot.",
+      "Record a structured Decision in the append-only audit ledger before supported money movements. USYC adapter actions are experimental and not fully verified on testnet; borrowing is disabled and must not be recorded as an available action.",
     parameters: {
       type: "object",
       properties: {
@@ -497,12 +456,11 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
             "receive",
             "invest_usyc",
             "redeem_usyc",
-            "borrow",
             "repay",
             "bridge",
             "hold",
           ],
-          description: "Action type.",
+          description: "Supported action type. Borrow is disabled; USYC save/redeem actions are experimental and not fully verified on testnet.",
         },
         amount: {
           type: "string",
@@ -540,7 +498,6 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
             "yield_deposit",
             "yield_withdrawal",
             "bridge",
-            "borrow",
             "repay",
             "internal_transfer",
           ],

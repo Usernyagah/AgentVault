@@ -42,14 +42,12 @@ import {
 } from "./guardrails.js";
 import {
   getWalletBalance,
-  getBorrowCapacity,
   transferUSDC,
   depositToUSYC,
   redeemFromUSYC,
-  borrowUSDC,
 } from "./circle-service.js";
-import { DecisionSchema, TOOL_DEFINITIONS, type RecordDecisionParams } from "./types.js";
-import { executeTool, toolForecastCashflow, type ToolContext, type ToolResult } from "./tools.js";
+import { TOOL_DEFINITIONS } from "./types.js";
+import { executeTool, toolForecastCashflow, type ToolContext } from "./tools.js";
 
 // ── Constants ────────────────────────────────
 
@@ -94,26 +92,26 @@ function buildSystemPrompt(): string {
 You manage three Circle wallets:
 - **Treasury**: Main holding wallet for income and reserves
 - **Operations**: Working capital for payments and expenses  
-- **Reserves**: Safety net and yield generation via USYC
+- **Reserves**: Safety net for business liquidity
 
 ## Your Tools
-You have 9 tools available:
+You have 8 tools available:
 1. **get_balance** – Check wallet balances (ALWAYS do this first)
 2. **forecast_cashflow** – Predict future cash needs
 3. **create_invoice** – Generate a customer invoice or payment link for inbound USDC on Arc
 4. **record_incoming_payment** – Register a received payment and update the invoice status
 5. **send_usdc** – Send USDC payments through Circle Developer-Controlled Wallets
-6. **save_to_usyc** – Invest idle USDC into USYC for yield
-7. **redeem_usyc** – Convert USYC back to USDC when needed
-8. **borrow_usdc** – Borrow USDC when facing a shortfall
-9. **record_decision** – Log a structured decision (MANDATORY before any money movement)
+6. **save_to_usyc** – EXPERIMENTAL; adapter not fully verified on testnet
+7. **redeem_usyc** – EXPERIMENTAL; adapter not fully verified on testnet
+8. **record_decision** – Log a structured decision (MANDATORY before any supported money movement)
 
 ## CRITICAL RULES (non-negotiable)
 1. **ALWAYS call get_balance first** before any financial analysis or decision.
-2. **ALWAYS call record_decision BEFORE** any money movement (send_usdc, save_to_usyc, redeem_usyc, borrow_usdc). If you try to move money without recording a decision first, the tool will block you.
+2. **ALWAYS call record_decision BEFORE** any supported money movement (send_usdc, save_to_usyc, redeem_usyc). If you try to move money without recording a decision first, the tool will block you.
 3. **ALWAYS explain your reasoning** in plain English. Users must understand WHY you made each decision.
 4. **NEVER attempt to circumvent guardrails**. They are enforced in code, not in your prompt. Trying to bypass them will fail.
-5. **Use forecast_cashflow** before making investment or borrowing decisions to justify your actions with data.
+5. **Never claim borrowing works. Borrowing is disabled and there is no borrow tool.**
+6. **USYC save/redeem are EXPERIMENTAL / NOT FULLY VERIFIED ON TESTNET.** Do not recommend them as an available yield product or execute unless the user explicitly asks for experimental testnet interaction; state the risk plainly.
 
 ## Decision-Making Framework
 When deciding on an action, follow this process:
@@ -121,7 +119,7 @@ When deciding on an action, follow this process:
 2. Assess the situation (user request, upcoming expenses, idle funds)
 3. If considering a financial action, forecast first → forecast_cashflow
 4. Record your decision with full reasoning → record_decision
-6. Execute the action → create_invoice / record_incoming_payment / send_usdc / save_to_usyc / redeem_usyc / borrow_usdc
+6. Execute only supported actions → create_invoice / record_incoming_payment / send_usdc. USYC adapter calls are experimental and user-request-only.
 6. Report the outcome in plain English
 
 ## Current Guardrails
@@ -138,7 +136,7 @@ ${recentSummary}
 - If you need human approval, say so clearly and explain what will happen once approved
 
 ## Network
-All wallet reads and USDC transfers use Circle Developer-Controlled Wallets on Arc testnet. USYC and borrowing are blocked until their Arc contracts are configured.`;
+All wallet reads and USDC transfers use Circle Developer-Controlled Wallets on Arc testnet. USYC save/redeem is experimental and not fully verified on testnet. Borrowing is disabled; only an unverified adapter exists.`;
 }
 
 // ── Initialization ─────────────────────────────
@@ -149,12 +147,12 @@ export function initAgent(config: AgentConfig): void {
   let openaiClient: OpenAI | null = null;
 
   // Only initialize OpenAI client if API key is provided
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = process.env.OPENAI_API_KEY?.trim();
   if (apiKey && apiKey !== "your_openai_api_key_here") {
     openaiClient = new OpenAI({ apiKey });
     console.log("[AGENT] OpenAI client initialized");
   } else {
-    console.log("[AGENT] No OpenAI API key — running in scaffold mode (no LLM calls)");
+    console.warn("[AGENT] No OpenAI API key — decision-making and actions are disabled");
   }
 
   state = {
@@ -210,9 +208,18 @@ export async function chat(userMessage: string): Promise<ChatMessage> {
   };
   s.chatHistory.push(userMsg);
 
-  // If no LLM client, fall back to scaffold mode
+  // Never make or execute a decision without the configured LLM.
   if (!s.openaiClient) {
-    return scaffoldResponse(userMessage, s);
+    const agentMsg: ChatMessage = {
+      id: uuid(),
+      role: "agent",
+      content:
+        "I can't make or execute treasury decisions because no LLM API key is configured. Set OPENAI_API_KEY to enable LLM tool-calling. No decision was made and no action was taken.",
+      timestamp: new Date().toISOString(),
+    };
+    s.chatHistory.push(agentMsg);
+    s.status = "idle";
+    return agentMsg;
   }
 
   try {
@@ -378,219 +385,40 @@ async function runReActLoop(
       toolCallLog.map((t) => `called ${t}`).join(", ") +
       ". Let me know if you'd like me to continue.",
     timestamp: new Date().toISOString(),
-    metadata: { toolCalls: toolCallLog },
+    metadata: {
+      decisionId: toolCtx.lastDecisionId || undefined,
+      toolCalls: toolCallLog,
+    },
   };
   s.chatHistory.push(safetyMsg);
   s.status = "idle";
   return safetyMsg;
 }
 
-// ── Scaffold Mode (no LLM) ───────────────────
-
-function scaffoldResponse(
-  userMessage: string,
-  s: AgentState
-): ChatMessage {
-  const guardrails = getGuardrails();
-  const agentMsg: ChatMessage = {
-    id: uuid(),
-    role: "agent",
-    content: [
-      `I've received your request: "${userMessage}"`,
-      "",
-      "🔧 **Running in scaffold mode** (no OpenAI API key configured).",
-      "Connect an LLM by setting `OPENAI_API_KEY` in your `.env` file to enable full autonomous decision-making.",
-      "",
-      "**Current guardrails are active:**",
-      `• Max daily spend: $${guardrails.maxDailySpend}`,
-      `• Max borrow: $${(guardrails as ExtendedGuardrailConfig).maxBorrowAmount}`,
-      `• Min reserve: $${guardrails.minReserveBalance}`,
-      `• Approval threshold: $${guardrails.approvalThreshold}`,
-      "",
-      "**Available tools:** get_balance, forecast_cashflow, send_usdc, save_to_usyc, redeem_usyc, borrow_usdc, record_decision",
-    ].join("\n"),
-    timestamp: new Date().toISOString(),
-  };
-
-  s.chatHistory.push(agentMsg);
-  s.status = "idle";
-  return agentMsg;
-}
-
 // ── Autonomous Evaluation ─────────────────────
-// Called periodically to let the agent self-evaluate
-// and act without a user prompt (e.g., invest idle funds)
+// Evaluations use the same LLM tool-calling path as chat.
 
 export async function evaluateAndAct(): Promise<LedgerEntry | null> {
   const s = getState();
+  if (!s.openaiClient) {
+    throw new Error(
+      "Cannot evaluate or execute treasury decisions without an LLM API key. Configure OPENAI_API_KEY."
+    );
+  }
   s.status = "thinking";
 
   try {
-    // 1. Gather current balances
-    const [treasury, operations, reserves] = await Promise.all([
-      getWalletBalance(s.config.wallets.treasury),
-      getWalletBalance(s.config.wallets.operations),
-      getWalletBalance(s.config.wallets.reserves),
-    ]);
-
-    const balanceSeen = {
-      treasury: treasury.balanceUSDC,
-      operations: operations.balanceUSDC,
-      reserves: reserves.balanceUSDC,
-    };
-
-    // If LLM is available, let it decide
-    if (s.openaiClient) {
-      const decisionCountBefore = getLedger().length;
-      const autoMsg = await chat(
-        `[SYSTEM AUTO-EVALUATION] Current balances — Treasury: $${treasury.balanceUSDC}, Operations: $${operations.balanceUSDC}, Reserves: $${reserves.balanceUSDC}. ` +
-          "Use the forecast and scheduled obligations to determine whether to redeem USYC, borrow within policy, or invest surplus idle USDC."
-      );
-      console.log("[AGENT] Auto-evaluation complete:", autoMsg.content.slice(0, 100));
-      if (getLedger().length > decisionCountBefore) {
-        s.status = "idle";
-        return getRecentDecisions(1)[0] ?? null;
-      }
-    }
-
-    const forecastResult = await toolForecastCashflow({ days: 30 }, {
-      config: s.config,
-      lastDecisionId: null,
-      decisionsThisTurn: [],
-      decisionAuthorizations: [],
-      allBalancesChecked: true,
-    });
-    if (!forecastResult.success || typeof forecastResult.data !== "object" || forecastResult.data === null) {
-      throw new Error(forecastResult.explanation);
-    }
-    const forecastData = forecastResult.data as {
-      forecast: CashFlowForecast;
-      daysUntilBelowReserve: number | null;
-      projectedShortfallUSDC: string;
-      availableToInvest: string;
-    };
-    const forecastText = `${forecastData.forecast.summary} ${forecastData.forecast.recommendation}`;
-    const shortfall = parseFloat(forecastData.projectedShortfallUSDC);
-
-    const runAction = async (
-      decisionParams: RecordDecisionParams,
-      movementTool: "save_to_usyc" | "redeem_usyc" | "borrow_usdc",
-      movementParams: unknown
-    ): Promise<LedgerEntry | null> => {
-      const toolContext: ToolContext = {
-        config: s.config,
-        lastDecisionId: null,
-        decisionsThisTurn: [],
-        decisionAuthorizations: [],
-        allBalancesChecked: true,
-      };
-      const recorded = await executeTool("record_decision", decisionParams, toolContext);
-      if (!recorded.success || typeof recorded.data !== "object" || recorded.data === null) {
-        console.warn(`[AGENT] Autonomous Decision rejected: ${recorded.explanation}`);
-        return null;
-      }
-      const decisionData = recorded.data as { decisionId?: string; requiresApproval?: boolean };
-      const entry = decisionData.decisionId ? getDecisionById(decisionData.decisionId) : undefined;
-      if (!entry) throw new Error("Recorded autonomous Decision is missing from the ledger.");
-
-      const queueForApproval = () => {
-        if (!s.pendingApprovals.some((pending) => pending.id === entry.id)) {
-          s.pendingApprovals.push(entry);
-        }
-        s.status = "awaiting_approval";
-      };
-      if (decisionData.requiresApproval) {
-        queueForApproval();
-        return entry;
-      }
-
-      s.status = "executing";
-      const movement = await executeTool(movementTool, movementParams, toolContext);
-      if (!movement.success) {
-        console.warn(`[AGENT] Autonomous movement failed: ${movement.explanation}`);
-        s.status = "idle";
-        return entry;
-      }
-      if (
-        typeof movement.data === "object" &&
-        movement.data !== null &&
-        "status" in movement.data &&
-        (movement.data as { status: string }).status === "awaiting_approval"
-      ) {
-        queueForApproval();
-      } else {
-        s.status = "idle";
-      }
-      return entry;
-    };
-
-    if (shortfall > 0 && forecastData.daysUntilBelowReserve !== null) {
-      const treasuryUsyc = parseFloat(treasury.balanceUSYC);
-      const operationsUsyc = parseFloat(operations.balanceUSYC);
-      const usycAvailable = treasuryUsyc + operationsUsyc;
-      if (usycAvailable > 0) {
-        const wallet = treasuryUsyc > 0 ? "treasury" : "operations";
-        const amount = Math.min(shortfall, treasuryUsyc > 0 ? treasuryUsyc : operationsUsyc).toFixed(2);
-        const reasoning = `Redeem $${amount} USYC now because the cash-flow forecast shows liquid balance below the reserve floor in ${forecastData.daysUntilBelowReserve} day(s). This preserves borrowing capacity and addresses the projected obligations first.`;
-        return await runAction({
-          action: "redeem_usyc",
-          amount,
-          reasoning,
-          forecast: forecastText,
-          ruleApplied: "redeem_yield_assets_before_borrowing",
-          confidence: 0.9,
-          category: "yield_withdrawal",
-          toWallet: wallet,
-        }, "redeem_usyc", { amount, toWallet: wallet });
-      }
-
-      try {
-        const capacity = await getBorrowCapacity(s.config.wallets.treasury);
-        const borrowAmount = Math.min(
-          shortfall,
-          parseFloat(capacity.availableUSDC),
-          getGuardrails().maxBorrowAmount
-        );
-        if (borrowAmount > 0) {
-          const amount = borrowAmount.toFixed(2);
-          const reasoning = `Borrow $${amount} USDC because the forecast shows a $${shortfall.toFixed(2)} reserve shortfall in ${forecastData.daysUntilBelowReserve} day(s), no USYC is available to redeem, and the configured Arc pool reports $${capacity.availableUSDC} borrowing capacity.`;
-          return await runAction({
-            action: "borrow",
-            amount,
-            reasoning,
-            forecast: forecastText,
-            ruleApplied: "borrow_only_after_liquid_and_yield_assets_are_exhausted",
-            confidence: 0.82,
-            category: "borrow",
-            toWallet: "treasury",
-          }, "borrow_usdc", { amount, reason: reasoning });
-        }
-      } catch (error) {
-        console.warn("[AGENT] Borrow not available:", error instanceof Error ? error.message : error);
-      }
-    }
-
-    const investable = Math.min(
-      parseFloat(forecastData.availableToInvest),
-      Math.max(0, parseFloat(treasury.balanceUSDC) - s.config.guardrails.autoInvestThreshold)
+    const response = await chat(
+      "[SYSTEM AUTO-EVALUATION] Review current wallet balances and cash-flow needs using your tools. If you recommend a financial action, record it with record_decision and provide specific reasoning before attempting any movement. If no action is warranted, explain why without inventing a decision."
     );
-    if (investable > 0) {
-      const amount = investable.toFixed(2);
-      const reasoning = `Invest $${amount} USDC from treasury into the configured USYC vault. The 30-day forecast includes scheduled obligations and recent realized outflows, and leaves the reserve floor plus a seven-day operating buffer liquid.`;
-      return await runAction({
-        action: "invest_usyc",
-        amount,
-        reasoning,
-        forecast: forecastText,
-        ruleApplied: "invest_only_forecast_surplus_after_reserve_and_obligations",
-        confidence: 0.86,
-        category: "yield_deposit",
-        fromWallet: "treasury",
-      }, "save_to_usyc", { amount, fromWallet: "treasury" });
-    }
+    const decisionId = response.metadata?.decisionId;
+    if (!decisionId) return null;
 
-    s.status = "idle";
-    return null;
+    const decision = getDecisionById(decisionId);
+    if (!decision || decision.recordType !== "decision") {
+      throw new Error(`LLM tool-calling returned unknown decision ${decisionId}.`);
+    }
+    return decision;
   } catch (error) {
     console.error("[AGENT] Error during evaluation:", error);
     s.status = "idle";
@@ -606,6 +434,10 @@ export async function approveDecision(decisionId: string): Promise<boolean> {
 
   if (!pending) {
     console.warn(`[AGENT] Decision ${decisionId} not found in pending approvals`);
+    return false;
+  }
+  if (pending.action === "borrow") {
+    console.warn(`[AGENT] Borrow approval ${decisionId} rejected: borrowing is disabled; only an unverified adapter exists.`);
     return false;
   }
 
@@ -651,7 +483,16 @@ export async function approveDecision(decisionId: string): Promise<boolean> {
   }
 
   // Execute the approved action
-  let transaction: { id: string; status: string; txHash?: string } | undefined;
+  let transaction:
+    | {
+        id: string;
+        status: string;
+        txHash?: string;
+        explorerUrl?: string;
+        finalStatus?: string;
+        error?: string;
+      }
+    | undefined;
   if (pending.action === "send" && pending.fromWallet) {
     transaction = await transferUSDC({
       fromWalletId: pending.fromWallet,
@@ -663,16 +504,16 @@ export async function approveDecision(decisionId: string): Promise<boolean> {
     transaction = await depositToUSYC(pending.fromWallet, pending.amountUSDC);
   } else if (pending.action === "redeem_usyc" && pending.toWallet) {
     transaction = await redeemFromUSYC(pending.toWallet, pending.amountUSDC);
-  } else if (pending.action === "borrow") {
-    transaction = await borrowUSDC(
-      s.config.wallets.treasury,
-      pending.amountUSDC,
-      pending.reasoning
-    );
   }
   appendDecisionOutcome(decisionId, {
     actionTaken: transaction
-      ? `Approved and executed as transaction ${transaction.id} (${transaction.status}).`
+      ? pending.action === "send" && transaction.status === "pending"
+        ? `Approved; transfer ${transaction.id} was submitted but remains pending (${transaction.finalStatus ?? transaction.status}). Do not resubmit.${transaction.txHash ? ` Hash: ${transaction.txHash}.` : ""}${transaction.explorerUrl ? ` Explorer: ${transaction.explorerUrl}` : ""}`
+        : pending.action === "send" && transaction.status === "failed"
+          ? `Approved, but transfer ${transaction.id} failed (${transaction.finalStatus ?? transaction.status}).${transaction.error ? ` ${transaction.error}` : ""}${transaction.txHash ? ` Hash: ${transaction.txHash}.` : ""}${transaction.explorerUrl ? ` Explorer: ${transaction.explorerUrl}` : ""}`
+          : pending.action === "send"
+            ? `Approved and transfer ${transaction.id} confirmed (${transaction.finalStatus ?? transaction.status}).${transaction.txHash ? ` Hash: ${transaction.txHash}.` : ""}${transaction.explorerUrl ? ` Explorer: ${transaction.explorerUrl}` : ""}`
+            : `Approved and executed as transaction ${transaction.id} (${transaction.status}).`
       : "Approved; no supported movement was required.",
     transactionHash: transaction?.txHash,
     transactionId: transaction?.id,
@@ -780,5 +621,6 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
     recentDecisions,
     forecast: forecastData.forecast,
     agentStatus: s.status,
+    demoMode: false,
   };
 }
