@@ -12,8 +12,8 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { dirname, isAbsolute, resolve } from "node:path";
 import {
   createHash,
   createPrivateKey,
@@ -72,17 +72,29 @@ let ledger: LedgerEntry[] = [];
 let signingKeys: SigningKeys | null = null;
 let initialized = false;
 
+function dataPath(configuredPath: string | undefined, fallbackPath: string): string {
+  const path = configuredPath ?? fallbackPath;
+  if (
+    process.env.VERCEL === "1" &&
+    configuredPath !== undefined &&
+    !isAbsolute(configuredPath)
+  ) {
+    return resolve(tmpdir(), "agentvault", configuredPath);
+  }
+  return resolve(path);
+}
+
 function ledgerPath(): string {
   const defaultPath = process.env.VERCEL === "1"
     ? resolve(tmpdir(), "agentvault", "decision-ledger.jsonl")
     : "data/decision-ledger.jsonl";
-  return resolve(process.env.AGENTVAULT_LEDGER_PATH ?? defaultPath);
+  return dataPath(process.env.AGENTVAULT_LEDGER_PATH, defaultPath);
 }
 
 function signingKeyPath(): string {
-  return resolve(
-    process.env.AGENTVAULT_SIGNING_KEY_PATH ??
-      `${dirname(ledgerPath())}/audit-signing-key.pem`
+  return dataPath(
+    process.env.AGENTVAULT_SIGNING_KEY_PATH,
+    `${dirname(ledgerPath())}/audit-signing-key.pem`,
   );
 }
 

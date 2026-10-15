@@ -10,8 +10,8 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { z } from "zod";
 import type { AgentConfig } from "@agentvault/shared";
 
@@ -94,10 +94,18 @@ export interface OnboardingStatus {
 let store: StoredOnboarding | undefined;
 
 function storePath() {
+  const configuredPath = process.env.AGENTVAULT_ONBOARDING_PATH;
   const defaultPath = process.env.VERCEL === "1"
     ? resolve(tmpdir(), "agentvault", "onboarding.json")
     : "data/onboarding.json";
-  return resolve(process.env.AGENTVAULT_ONBOARDING_PATH ?? defaultPath);
+  if (
+    process.env.VERCEL === "1" &&
+    configuredPath !== undefined &&
+    !isAbsolute(configuredPath)
+  ) {
+    return resolve(tmpdir(), "agentvault", configuredPath);
+  }
+  return resolve(configuredPath ?? defaultPath);
 }
 
 function defaultStore(): StoredOnboarding {
