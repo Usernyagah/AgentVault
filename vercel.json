@@ -2,7 +2,8 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "services": {
     "api": {
-      "root": "apps/api"
+      "root": "apps/api",
+      "entrypoint": "src/index.ts"
     },
     "web": {
       "root": "apps/web"
