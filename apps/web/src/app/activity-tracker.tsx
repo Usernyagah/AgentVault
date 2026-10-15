@@ -2,8 +2,7 @@
 
 import { useEffect } from "react";
 import { usePathname } from "next/navigation";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+import { apiFetch } from "@/lib/api";
 
 export default function ActivityTracker() {
   const pathname = usePathname();
@@ -23,20 +22,14 @@ export default function ActivityTracker() {
               : null;
     if (!event) return;
 
-    void fetch(`${API_BASE}/api/onboarding/activity`, {
+    void apiFetch<void>("/api/onboarding/activity", {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
         Authorization: `Bearer ${activityToken}`,
       },
       body: JSON.stringify({ event }),
     })
-      .then(async (response) => {
-        if (!response.ok) {
-          const body = await response.json().catch(() => ({}));
-          console.error("Unable to record workspace activity:", body.error || response.statusText);
-        }
-      })
+      .then(() => undefined)
       .catch((cause: unknown) => {
         console.error("Unable to reach the workspace activity endpoint:", cause);
       });

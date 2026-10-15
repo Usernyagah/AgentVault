@@ -4,6 +4,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { apiFetch } from "@/lib/api";
 
 interface LedgerEntry {
   id: string;
@@ -61,7 +62,6 @@ export default function LedgerPage() {
     setLoading(true);
     setLoadError(null);
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
       const params = new URLSearchParams({
         limit: String(PAGE_SIZE),
         offset: String(nextOffset),
@@ -69,32 +69,27 @@ export default function LedgerPage() {
       if (search.trim()) params.set("q", search.trim());
       if (action) params.set("action", action);
 
-      const [ledgerRes, verifyRes] = await Promise.all([
-        fetch(`${apiUrl}/api/ledger?${params.toString()}`, { cache: "no-store" }),
-        fetch(`${apiUrl}/api/ledger/verify`, { cache: "no-store" }),
+      const [ledgerResult, verifyResult] = await Promise.all([
+        apiFetch<{
+          entries: LedgerEntry[];
+          total: number;
+          demoMode: boolean;
+        }>(`/api/ledger?${params.toString()}`),
+        apiFetch<{ valid: boolean | null; demoMode: boolean }>("/api/ledger/verify"),
       ]);
-      if (!ledgerRes.ok || !verifyRes.ok) {
-        throw new Error(`Ledger request failed (${ledgerRes.status}/${verifyRes.status}).`);
-      }
-      const [ledgerJson, verifyJson] = await Promise.all([
-        ledgerRes.json(),
-        verifyRes.json(),
-      ]);
-      if (!ledgerJson.success) throw new Error(ledgerJson.error || "Unable to load audit records.");
-      if (!verifyJson.success) throw new Error(verifyJson.error || "Unable to verify the audit chain.");
-      const demoMode = ledgerJson.data?.demoMode;
+      const demoMode = ledgerResult.data.demoMode;
       if (
         typeof demoMode !== "boolean" ||
-        ledgerRes.headers.get("X-AgentVault-Mode") !== (demoMode ? "demo" : "live") ||
-        verifyRes.headers.get("X-AgentVault-Mode") !== (demoMode ? "demo" : "live") ||
-        verifyJson.data?.demoMode !== demoMode
+        ledgerResult.mode !== (demoMode ? "demo" : "live") ||
+        verifyResult.mode !== ledgerResult.mode ||
+        verifyResult.data.demoMode !== demoMode
       ) {
         throw new Error("API mode changed while loading the ledger. Refresh to avoid mixing Demo and Live records.");
       }
 
-      setEntries(ledgerJson.data?.entries ?? []);
-      setTotal(ledgerJson.data?.total ?? 0);
-      setChainValid(verifyJson.data?.valid ?? null);
+      setEntries(ledgerResult.data.entries);
+      setTotal(ledgerResult.data.total);
+      setChainValid(verifyResult.data.valid);
       setDemoMode(demoMode);
     } catch (error) {
       setEntries([]);

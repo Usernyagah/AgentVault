@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
+import { apiFetch, type ApplicationMode } from "@/lib/api";
 
 const navigation = [
   { href: "/", label: "Overview", code: "01" },
@@ -12,27 +13,24 @@ const navigation = [
   { href: "/onboarding", label: "Business setup", code: "05" },
 ];
 
-type ApplicationMode = "demo" | "live" | "unknown";
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+type SidebarMode = ApplicationMode | "unknown";
 
 export default function Sidebar() {
   const pathname = usePathname();
-  const [mode, setMode] = useState<ApplicationMode>("unknown");
+  const [mode, setMode] = useState<SidebarMode>("unknown");
 
   useEffect(() => {
     let active = true;
     const refreshMode = async () => {
       try {
-        const response = await fetch(`${API_BASE}/api/demo`, { cache: "no-store" });
-        const result = await response.json();
-        const apiMode = result.data?.mode;
+        const result = await apiFetch<{ enabled: boolean; mode: ApplicationMode }>("/api/demo");
+        const apiMode = result.data.mode;
         if (
-          !response.ok ||
-          !result.success ||
           (apiMode !== "demo" && apiMode !== "live") ||
-          response.headers.get("X-AgentVault-Mode") !== apiMode
+          result.mode !== apiMode ||
+          result.data.enabled !== (apiMode === "demo")
         ) {
-          throw new Error(result.error || "API mode status is unavailable.");
+          throw new Error("API mode status is unavailable or inconsistent.");
         }
         if (active) setMode(apiMode);
       } catch (error) {

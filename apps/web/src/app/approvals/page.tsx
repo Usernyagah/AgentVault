@@ -4,6 +4,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { apiFetch } from "@/lib/api";
 
 interface Approval {
   id: string;
@@ -32,40 +33,33 @@ export default function ApprovalsPage() {
 
   async function fetchApprovals() {
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
-      const [res, demoRes] = await Promise.all([
-        fetch(`${apiUrl}/api/approvals`, { cache: "no-store" }),
-        fetch(`${apiUrl}/api/demo`, { cache: "no-store" }),
+      const [approvalsResult, demoResult] = await Promise.all([
+        apiFetch<Approval[]>("/api/approvals"),
+        apiFetch<{ enabled: boolean; mode: "demo" | "live" }>("/api/demo"),
       ]);
-      if (!res.ok || !demoRes.ok) throw new Error("Unable to load approval status.");
-      const [json, demoJson] = await Promise.all([res.json(), demoRes.json()]);
-      if (!json.success || !demoJson.success) throw new Error(json.error || demoJson.error || "Unable to load approvals.");
-      const mode = demoJson.data?.mode;
+      const mode = demoResult.data.mode;
       if (
         (mode !== "demo" && mode !== "live") ||
-        res.headers.get("X-AgentVault-Mode") !== mode ||
-        demoRes.headers.get("X-AgentVault-Mode") !== mode ||
-        demoJson.data?.enabled !== (mode === "demo")
+        approvalsResult.mode !== mode ||
+        demoResult.mode !== mode ||
+        demoResult.data.enabled !== (mode === "demo")
       ) {
         throw new Error("API mode changed while loading approvals. Refresh to avoid mixing Demo and Live records.");
       }
-      setApprovals(json.data || []);
+      setApprovals(approvalsResult.data);
       setDemoMode(mode === "demo");
       setActionError(null);
-    } catch {
+    } catch (error) {
       setApprovals([]);
       setDemoMode(null);
-      setActionError("Could not connect to the API. Approval status may be out of date.");
+      setActionError(error instanceof Error ? error.message : String(error));
     }
   }
 
   async function handleApproval(id: string, action: "approve" | "reject") {
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
-      const response = await fetch(`${apiUrl}/api/approvals/${id}/${action}`, { method: "POST", cache: "no-store" });
-      const result = await response.json();
-      if (!response.ok || !result.success) throw new Error(result.error || "Approval action failed.");
-      if (demoMode === null || response.headers.get("X-AgentVault-Mode") !== (demoMode ? "demo" : "live")) {
+      const result = await apiFetch(`/api/approvals/${id}/${action}`, { method: "POST" });
+      if (demoMode === null || result.mode !== (demoMode ? "demo" : "live")) {
         throw new Error("Application mode changed; refusing to display a potentially mixed approval result.");
       }
       await fetchApprovals();

@@ -183,9 +183,20 @@ Create an onboarding admin token:
 node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"
 ```
 
-Then start the live API and dashboard separately with `npm run dev` (or
-`npm run dev:api` and `npm run dev:web`). Avoid real-wallet testing until Circle
-credentials, Arc testnet wallet IDs, permissions, and funding are verified.
+Then start the API and dashboard together with one command:
+
+```powershell
+npm run dev
+```
+
+This starts both services in parallel. You can also start them separately with
+`npm run dev:api` and `npm run dev:web`. The dashboard sends `/api/*`
+requests through its Next.js server to the backend, so browser requests remain
+same-origin. By default, the backend is expected at `http://localhost:4000`;
+set `AGENTVAULT_API_URL` in the web server environment to use another backend
+URL. `NEXT_PUBLIC_API_URL` is also accepted as a compatibility fallback.
+Avoid real-wallet testing until Circle credentials, Arc testnet wallet IDs,
+permissions, and funding are verified.
 
 ## Onboarding and deployment warning
 

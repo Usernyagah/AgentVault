@@ -4,6 +4,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import { apiFetch } from "@/lib/api";
 
 interface Message {
   id: string;
@@ -45,35 +46,18 @@ export default function ChatPage() {
     setLoading(true);
 
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
-      const res = await fetch(`${apiUrl}/api/chat`, {
+      const result = await apiFetch<Message>("/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: userMsg.content }),
       });
-
-      const json = await res.json();
-
-      if (json.success && json.data) {
-        setMessages((prev) => [...prev, json.data]);
-      } else {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `error-${Date.now()}`,
-            role: "system",
-            content: `Error: ${json.error || "Failed to get response"}`,
-            timestamp: new Date().toISOString(),
-          },
-        ]);
-      }
-    } catch (err: any) {
+      setMessages((prev) => [...prev, result.data]);
+    } catch (err) {
       setMessages((prev) => [
         ...prev,
         {
           id: `error-${Date.now()}`,
           role: "system",
-          content: `Connection error: ${err.message}. Make sure the API is running on port 4000.`,
+          content: `Unable to reach the treasury API: ${err instanceof Error ? err.message : String(err)}`,
           timestamp: new Date().toISOString(),
         },
       ]);

@@ -2,8 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { useParams, useRouter } from "next/navigation";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+import { apiFetch } from "@/lib/api";
 
 export default function InvitePage() {
   const params = useParams<{ token: string }>();
@@ -17,10 +16,10 @@ export default function InvitePage() {
   useEffect(() => {
     async function loadInvite() {
       try {
-        const response = await fetch(`${API_BASE}/api/onboarding/invites/${encodeURIComponent(token)}`);
-        const body = await response.json();
-        if (!response.ok || !body.success) throw new Error(body.error || "This invite is no longer valid.");
-        setEmail(body.data.email);
+        const result = await apiFetch<{ email: string }>(
+          `/api/onboarding/invites/${encodeURIComponent(token)}`
+        );
+        setEmail(result.data.email);
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause));
       }
@@ -33,18 +32,18 @@ export default function InvitePage() {
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch(
-        `${API_BASE}/api/onboarding/invites/${encodeURIComponent(token)}/accept`,
+      const result = await apiFetch<{
+        activityToken: string;
+        user: { id: string; name: string; email: string };
+      }>(
+        `/api/onboarding/invites/${encodeURIComponent(token)}/accept`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name, email }),
         }
       );
-      const body = await response.json();
-      if (!response.ok || !body.success) throw new Error(body.error || "Unable to accept this invitation.");
-      window.localStorage.setItem("agentvault.activityToken", body.data.activityToken);
-      window.localStorage.setItem("agentvault.activityUser", JSON.stringify(body.data.user));
+      window.localStorage.setItem("agentvault.activityToken", result.data.activityToken);
+      window.localStorage.setItem("agentvault.activityUser", JSON.stringify(result.data.user));
       router.replace("/");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));

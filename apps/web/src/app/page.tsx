@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import type { DashboardSummary, DecisionRecord } from "@agentvault/shared";
+import { apiFetch, type ApplicationMode } from "@/lib/api";
 
 interface LedgerRecord extends DecisionRecord {
   recordType: "decision" | "execution" | "verified_transaction";
@@ -46,29 +47,6 @@ interface TractionSummary {
   demoMode: boolean;
 }
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
-type ApplicationMode = "demo" | "live";
-
-async function requestJson<T>(
-  path: string,
-  options?: RequestInit
-): Promise<{ data: T; mode: ApplicationMode }> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    cache: "no-store",
-    headers: { "Content-Type": "application/json", ...options?.headers },
-  });
-  const body = await response.json();
-  const mode = response.headers.get("X-AgentVault-Mode");
-  if (mode !== "demo" && mode !== "live") {
-    throw new Error("The API did not provide a verifiable Demo/Live mode.");
-  }
-  if (!response.ok || !body.success) {
-    throw new Error(body.error || `API request failed (${response.status}).`);
-  }
-  return { data: body.data as T, mode };
-}
-
 function currency(value: string | undefined) {
   if (value === undefined) return "—";
   return `$${Number(value ?? "0").toLocaleString("en-US", {
@@ -96,10 +74,10 @@ export default function DashboardPage() {
   const refresh = useCallback(async () => {
     try {
       const [summaryResult, approvalsResult, ledgerResult, tractionResult] = await Promise.all([
-        requestJson<DashboardSummary>("/api/dashboard"),
-        requestJson<Approval[]>("/api/approvals"),
-        requestJson<LedgerResponse>("/api/ledger?limit=5"),
-        requestJson<TractionResponse>("/api/traction"),
+        apiFetch<DashboardSummary>("/api/dashboard"),
+        apiFetch<Approval[]>("/api/approvals"),
+        apiFetch<LedgerResponse>("/api/ledger?limit=5"),
+        apiFetch<TractionResponse>("/api/traction"),
       ]);
       const { data: nextSummary, mode } = summaryResult;
       if (
@@ -139,7 +117,7 @@ export default function DashboardPage() {
     setBusy(true);
     try {
       const enabled = !summary?.demoMode;
-      const result = await requestJson<{ enabled: boolean; mode: ApplicationMode }>("/api/demo", {
+      const result = await apiFetch<{ enabled: boolean; mode: ApplicationMode }>("/api/demo", {
         method: "POST",
         body: JSON.stringify({ enabled }),
       });
@@ -161,7 +139,7 @@ export default function DashboardPage() {
   async function evaluate() {
     setBusy(true);
     try {
-      const result = await requestJson("/api/agent/evaluate", { method: "POST" });
+      const result = await apiFetch("/api/agent/evaluate", { method: "POST" });
       if (result.mode !== (summary?.demoMode ? "demo" : "live")) {
         throw new Error("Application mode changed; refusing to display potentially mixed evaluation results.");
       }
@@ -176,7 +154,7 @@ export default function DashboardPage() {
   async function decideApproval(id: string, action: "approve" | "reject") {
     setBusy(true);
     try {
-      const result = await requestJson(`/api/approvals/${id}/${action}`, { method: "POST" });
+      const result = await apiFetch(`/api/approvals/${id}/${action}`, { method: "POST" });
       if (result.mode !== (summary?.demoMode ? "demo" : "live")) {
         throw new Error("Application mode changed; refusing to display potentially mixed approval results.");
       }
@@ -194,7 +172,7 @@ export default function DashboardPage() {
     setTractionError(null);
     setTractionMessage(null);
     try {
-      const result = await requestJson<{ entry: LedgerRecord; explorerUrl: string }>("/api/traction/verify", {
+      const result = await apiFetch<{ entry: LedgerRecord; explorerUrl: string }>("/api/traction/verify", {
         method: "POST",
         headers: { Authorization: `Bearer ${verificationToken}` },
         body: JSON.stringify({
@@ -221,7 +199,7 @@ export default function DashboardPage() {
     setTractionError(null);
     setTractionMessage(null);
     try {
-      const response = await fetch(`${API_BASE}/api/traction/summary?format=markdown`, { cache: "no-store" });
+      const response = await fetch("/api/traction/summary?format=markdown", { cache: "no-store" });
       if (response.headers.get("X-AgentVault-Mode") !== "live") {
         throw new Error("Switch to Live Mode to export real Arc transaction activity.");
       }
@@ -238,7 +216,7 @@ export default function DashboardPage() {
     setTractionError(null);
     setTractionMessage(null);
     try {
-      const result = await requestJson<TractionSummary>("/api/traction/summary?format=json");
+      const result = await apiFetch<TractionSummary>("/api/traction/summary?format=json");
       if (result.mode !== "live" || result.data.demoMode) {
         throw new Error("Switch to Live Mode to export real Arc transaction activity.");
       }

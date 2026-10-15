@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { apiFetch } from "@/lib/api";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 type WalletPurpose = "treasury" | "operations" | "reserves";
 
 interface OnboardingStatus {
@@ -31,19 +31,14 @@ async function onboardingRequest<T>(
   adminToken: string,
   options?: RequestInit
 ): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
+  const result = await apiFetch<T>(path, {
     ...options,
     headers: {
-      "Content-Type": "application/json",
       Authorization: `Bearer ${adminToken}`,
       ...options?.headers,
     },
   });
-  const body = await response.json();
-  if (!response.ok || !body.success) {
-    throw new Error(body.error || `Request failed (${response.status}).`);
-  }
-  return body.data as T;
+  return result.data;
 }
 
 export default function OnboardingPage() {
