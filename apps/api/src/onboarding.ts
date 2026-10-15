@@ -49,6 +49,15 @@ interface StoredInvite {
   acceptedBy?: string;
 }
 
+const StoredInviteSchema: z.ZodType<StoredInvite> = z.object({
+  tokenHash: z.string(),
+  email: z.string().email(),
+  createdAt: z.string(),
+  expiresAt: z.string(),
+  acceptedAt: z.string().optional(),
+  acceptedBy: z.string().optional(),
+});
+
 interface StoredUser {
   id: string;
   name: string;
@@ -115,14 +124,7 @@ function getStore(): StoredOnboarding {
   const schema = z.object({
     rules: OnboardingRulesSchema,
     wallets: z.record(z.string()).default({}),
-    invites: z.array(z.object({
-      tokenHash: z.string(),
-      email: z.string().email(),
-      createdAt: z.string(),
-      expiresAt: z.string(),
-      acceptedAt: z.string().optional(),
-      acceptedBy: z.string().optional(),
-    })).default([]),
+    invites: z.array(StoredInviteSchema).default([]),
     users: z.array(z.object({
       id: z.string(),
       name: z.string(),
