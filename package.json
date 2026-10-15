@@ -2,6 +2,7 @@
   "name": "agentvault",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "description": "Tameion Treasury Agent – AI-powered autonomous business treasury on Arc/Circle",
   "workspaces": [
     "packages/*",
