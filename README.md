@@ -198,6 +198,27 @@ URL. `NEXT_PUBLIC_API_URL` is also accepted as a compatibility fallback.
 Avoid real-wallet testing until Circle credentials, Arc testnet wallet IDs,
 permissions, and funding are verified.
 
+## Deploy web and API together on Vercel
+
+Import the repository as one Vercel project using **Services**. Keep the
+project root at the repository root (`./`) and include both services:
+
+- `web` — `apps/web`, Next.js, served at `/`
+- `api` — `apps/api`, Hono, served at `/api/*`
+
+The root `vercel.json` defines these service roots and routes API requests to
+Hono on the same deployment and domain. The API exports its Hono app to Vercel
+and only starts the local Node server outside Vercel. Do not set
+`AGENTVAULT_API_URL` for this same-project setup; that variable is only for
+local development or a separately hosted API.
+
+Add required API credentials as server-side Vercel environment variables.
+Do not expose secrets with a `NEXT_PUBLIC_` prefix. This deployment currently
+uses in-memory application state and temporary `/tmp` files on Vercel; these
+are not durable across function instances or deployments. Use a durable
+database and persistent signing-key storage, and add authentication and
+authorization, before using this deployment with real funds.
+
 ## Onboarding and deployment warning
 
 Onboarding saves payroll day and reserve percentage. A legacy maximum borrow

@@ -13,6 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import {
   createHash,
   createPrivateKey,
@@ -72,7 +73,10 @@ let signingKeys: SigningKeys | null = null;
 let initialized = false;
 
 function ledgerPath(): string {
-  return resolve(process.env.AGENTVAULT_LEDGER_PATH ?? "data/decision-ledger.jsonl");
+  const defaultPath = process.env.VERCEL === "1"
+    ? resolve(tmpdir(), "agentvault", "decision-ledger.jsonl")
+    : "data/decision-ledger.jsonl";
+  return resolve(process.env.AGENTVAULT_LEDGER_PATH ?? defaultPath);
 }
 
 function signingKeyPath(): string {

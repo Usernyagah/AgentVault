@@ -815,8 +815,10 @@ initAgent(applyOnboardingConfiguration({
 
 const port = parseInt(process.env.API_PORT || "4000");
 
-serve({ fetch: app.fetch, port }, (info) => {
-  console.log(`\n🏦 AgentVault Treasury API running on http://localhost:${info.port}\n`);
-});
+if (process.env.VERCEL !== "1") {
+  serve({ fetch: app.fetch, port }, (info) => {
+    console.log(`\n🏦 AgentVault Treasury API running on http://localhost:${info.port}\n`);
+  });
+}
 
 export default app;
