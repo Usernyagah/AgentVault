@@ -766,23 +766,27 @@ app.put("/api/guardrails", async (c) => {
 // Initialize Circle service
 initLedger();
 
-initCircle({
-  apiKey: process.env.CIRCLE_API_KEY || "",
-  entitySecret: process.env.CIRCLE_ENTITY_SECRET || "",
-  walletSetId: process.env.CIRCLE_WALLET_SET_ID || "",
-  usdcTokenId: process.env.CIRCLE_USDC_TOKEN_ID || "",
-  gatewayApiBaseUrl: process.env.GATEWAY_API_BASE_URL || "https://gateway-api-testnet.circle.com",
-  gatewaySourceDomains: (process.env.GATEWAY_SOURCE_DOMAINS || "26")
-    .split(",")
-    .map((domain) => Number(domain.trim()))
-    .filter((domain) => Number.isInteger(domain) && domain >= 0),
-  arcRpcUrl: process.env.ARC_RPC_URL || "https://rpc.testnet.arc.io",
-  usdcContractAddress: process.env.ARC_TESTNET_USDC_ADDRESS || "",
-  usycVaultAddress: process.env.USYC_VAULT_ADDRESS || "",
-  usycShareDecimals: parseInt(process.env.USYC_SHARE_DECIMALS || "6"),
-  lendingContractAddress: process.env.ARC_LENDING_CONTRACT_ADDRESS || "",
-  lendingTokenDecimals: parseInt(process.env.LENDING_TOKEN_DECIMALS || "6"),
-});
+// Only initialize Circle and Agent in non-Vercel environments or when credentials are available
+// Demo mode doesn't require these initializations
+if (process.env.VERCEL !== "1" || process.env.CIRCLE_API_KEY) {
+  initCircle({
+    apiKey: process.env.CIRCLE_API_KEY || "",
+    entitySecret: process.env.CIRCLE_ENTITY_SECRET || "",
+    walletSetId: process.env.CIRCLE_WALLET_SET_ID || "",
+    usdcTokenId: process.env.CIRCLE_USDC_TOKEN_ID || "",
+    gatewayApiBaseUrl: process.env.GATEWAY_API_BASE_URL || "https://gateway-api-testnet.circle.com",
+    gatewaySourceDomains: (process.env.GATEWAY_SOURCE_DOMAINS || "26")
+      .split(",")
+      .map((domain) => Number(domain.trim()))
+      .filter((domain) => Number.isInteger(domain) && domain >= 0),
+    arcRpcUrl: process.env.ARC_RPC_URL || "https://rpc.testnet.arc.io",
+    usdcContractAddress: process.env.ARC_TESTNET_USDC_ADDRESS || "",
+    usycVaultAddress: process.env.USYC_VAULT_ADDRESS || "",
+    usycShareDecimals: parseInt(process.env.USYC_SHARE_DECIMALS || "6"),
+    lendingContractAddress: process.env.ARC_LENDING_CONTRACT_ADDRESS || "",
+    lendingTokenDecimals: parseInt(process.env.LENDING_TOKEN_DECIMALS || "6"),
+  });
+}
 
 // Initialize Agent
 initAgent(applyOnboardingConfiguration({
