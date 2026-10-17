@@ -71,7 +71,10 @@ import {
 } from "./onboarding.js";
 
 // ── Load environment ────────────────────────────
-config({ path: "../../.env" });
+// Skip dotenv in Vercel (env vars are automatically available)
+if (process.env.VERCEL !== "1") {
+  config({ path: "../../.env" });
+}
 
 const app = new Hono<{ Variables: { demoMode: boolean } }>();
 

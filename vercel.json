@@ -3,7 +3,7 @@
   "services": {
     "api": {
       "root": "apps/api",
-      "entrypoint": "src/index.ts"
+      "entrypoint": "index.ts"
     },
     "web": {
       "root": "apps/web"

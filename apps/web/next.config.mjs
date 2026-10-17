@@ -9,6 +9,11 @@ loadEnvConfig(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../.."
 const nextConfig = {
   transpilePackages: ["@agentvault/shared"],
   async rewrites() {
+    // Skip rewrites in Vercel Services deployment (API is on same domain)
+    if (process.env.VERCEL === "1") {
+      return [];
+    }
+
     const apiBase = (
       process.env.AGENTVAULT_API_URL ||
       process.env.NEXT_PUBLIC_API_URL ||
