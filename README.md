@@ -198,26 +198,27 @@ URL. `NEXT_PUBLIC_API_URL` is also accepted as a compatibility fallback.
 Avoid real-wallet testing until Circle credentials, Arc testnet wallet IDs,
 permissions, and funding are verified.
 
-## Deploy web and API together on Vercel
+## Deploy the demo independently on Vercel
 
-Import the repository as one Vercel project using **Services**. Keep the
-project root at the repository root (`./`) and include both services:
+Import the repository as **one** Vercel project with the root directory at the
+repository root (`./`). Do not set the Root Directory to `apps/web`. The root
+`vercel.json` deploys the Next.js dashboard, which hosts the Hono API at
+`/api/*` and `/health` on the same domain.
 
-- `web` — `apps/web`, Next.js, served at `/`
-- `api` — `apps/api`, Hono, served at `/api/*`
+Do not set `AGENTVAULT_API_URL`. No Circle, OpenAI, or admin token is required
+for the public demo.
 
-The root `vercel.json` defines these service roots and routes API requests to
-Hono on the same deployment and domain. The API exports its Hono app to Vercel
-and only starts the local Node server outside Vercel. Do not set
-`AGENTVAULT_API_URL` for this same-project setup; that variable is only for
-local development or a separately hosted API.
+On Vercel, Demo Mode starts enabled and locked so the synthetic freelancer
+treasury works without live credentials. Seeded balances, approvals, unsigned
+demo ledger records, and simulated agent chat are created in memory on each
+serverless instance. Set the server-side variable `AGENTVAULT_DEMO_MODE=0`
+only when you intentionally want live Circle data, then add Circle and OpenAI
+secrets. Do not expose secrets with a `NEXT_PUBLIC_` prefix.
 
-Add required API credentials as server-side Vercel environment variables.
-Do not expose secrets with a `NEXT_PUBLIC_` prefix. This deployment currently
-uses in-memory application state and temporary `/tmp` files on Vercel; these
-are not durable across function instances or deployments. Use a durable
-database and persistent signing-key storage, and add authentication and
-authorization, before using this deployment with real funds.
+Live mode on Vercel still uses in-memory application state and temporary
+`/tmp` files; these are not durable across function instances or deployments.
+Use a durable database and persistent signing-key storage, and add
+authentication and authorization, before using a deployment with real funds.
 
 ## Onboarding and deployment warning
 

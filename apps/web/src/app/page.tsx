@@ -276,9 +276,11 @@ export default function DashboardPage() {
               {summary.agentStatus.replaceAll("_", " ")}
             </span>
           )}
-          <button className="btn btn-demo" onClick={() => void toggleDemo()} disabled={busy}>
-            {summary?.demoMode ? "Exit Demo Mode" : "▶ Try Demo Mode"}
-          </button>
+          {summary && !summary.modeLocked && (
+            <button className="btn btn-demo" onClick={() => void toggleDemo()} disabled={busy}>
+              {summary.demoMode ? "Exit Demo Mode" : "▶ Try Demo Mode"}
+            </button>
+          )}
         </div>
       </header>
 

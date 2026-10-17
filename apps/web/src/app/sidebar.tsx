@@ -23,7 +23,7 @@ export default function Sidebar() {
     let active = true;
     const refreshMode = async () => {
       try {
-        const result = await apiFetch<{ enabled: boolean; mode: ApplicationMode }>("/api/demo");
+        const result = await apiFetch<{ enabled: boolean; mode: ApplicationMode; locked?: boolean }>("/api/demo");
         const apiMode = result.data.mode;
         if (
           (apiMode !== "demo" && apiMode !== "live") ||

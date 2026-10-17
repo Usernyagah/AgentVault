@@ -9,6 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@agentvault/api": "*",
     "@agentvault/shared": "*",
     "@fontsource-variable/manrope": "^5.2.6",
     "@fontsource/ibm-plex-mono": "^5.2.6",

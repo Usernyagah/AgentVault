@@ -1,21 +1,14 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "services": {
-    "api": {
-      "root": "apps/api",
-      "entrypoint": "index.ts"
-    },
     "web": {
-      "root": "apps/web"
+      "root": "apps/web",
+      "framework": "nextjs",
+      "installCommand": "npm install --prefix ../..",
+      "buildCommand": "npm run build --prefix ../.. --workspace=@agentvault/shared --workspace=@agentvault/agent-core --workspace=@agentvault/api --workspace=@agentvault/web"
     }
   },
   "rewrites": [
-    {
-      "source": "/api/(.*)",
-      "destination": {
-        "service": "api"
-      }
-    },
     {
       "source": "/(.*)",
       "destination": {

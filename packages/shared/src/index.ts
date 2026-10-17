@@ -204,4 +204,5 @@ export interface DashboardSummary {
   forecast: CashFlowForecast;
   agentStatus: "idle" | "thinking" | "executing" | "awaiting_approval";
   demoMode: boolean;
+  modeLocked?: boolean;
 }

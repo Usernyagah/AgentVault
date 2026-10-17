@@ -19,7 +19,7 @@ export default function ChatPage() {
       id: "system-1",
       role: "system",
       content:
-        "Treasury Agent is online. I can help you manage payments, check balances, forecast cash flow, and explain any past decisions. All actions are logged to the audit ledger.",
+        "Treasury Agent is online. Ask about balances, the forecast, payments, or past decisions. Demo Mode answers from simulated data and does not call OpenAI or Circle.",
       timestamp: new Date().toISOString(),
     },
   ]);

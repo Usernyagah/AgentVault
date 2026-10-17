@@ -1,6 +1,7 @@
 import { v4 as uuid } from "uuid";
 import type {
   CashFlowForecast,
+  ChatMessage,
   DashboardSummary,
   DecisionAction,
   DecisionRecord,
@@ -39,6 +40,36 @@ const day = (offset: number) => {
   date.setDate(date.getDate() + offset);
   return date.toISOString().slice(0, 10);
 };
+
+function parseBooleanEnv(value: string | undefined): boolean | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "on", "yes"].includes(normalized)) return true;
+  if (["0", "false", "off", "no"].includes(normalized)) return false;
+  return undefined;
+}
+
+export function isVercelDeployment(): boolean {
+  return process.env.VERCEL === "1" || process.env.VERCEL === "true";
+}
+
+export function demoModeFromEnv(): boolean | undefined {
+  return parseBooleanEnv(process.env.AGENTVAULT_DEMO_MODE);
+}
+
+export function initialDemoEnabled(): boolean {
+  const fromEnv = demoModeFromEnv();
+  if (fromEnv !== undefined) return fromEnv;
+  return isVercelDeployment();
+}
+
+export function isDemoLocked(): boolean {
+  return isVercelDeployment() && initialDemoEnabled();
+}
+
+export function shouldInitializeLiveServices(): boolean {
+  return !isVercelDeployment() || !initialDemoEnabled();
+}
 
 const state: DemoState = {
   enabled: false,
@@ -172,11 +203,23 @@ function resetDemo(): void {
   });
 }
 
+export function ensureDemoSeeded(): void {
+  if (state.enabled && state.records.length === 0) {
+    resetDemo();
+  }
+}
+
 export function isDemoEnabled(): boolean {
+  ensureDemoSeeded();
   return state.enabled;
 }
 
 export function setDemoEnabled(enabled: boolean): void {
+  if (isDemoLocked() && !enabled) {
+    throw new Error(
+      "Demo Mode is locked on this Vercel deployment so the public demo can run without Circle credentials. Set AGENTVAULT_DEMO_MODE=0 to use live data."
+    );
+  }
   if (enabled && !state.enabled) resetDemo();
   state.enabled = enabled;
 }
@@ -185,6 +228,7 @@ export function getDemoDashboard(): DashboardSummary & {
   demoMode: true;
   outstandingLoans: string;
 } {
+  ensureDemoSeeded();
   return {
     totalBalance: money(totalLiquid()),
     treasuryBalance: money(state.treasury),
@@ -200,6 +244,7 @@ export function getDemoDashboard(): DashboardSummary & {
     forecast: forecast(),
     agentStatus: state.approvals.length > 0 ? "awaiting_approval" : "idle",
     demoMode: true,
+    modeLocked: isDemoLocked(),
   };
 }
 
@@ -284,6 +329,33 @@ export function runDemoEvaluation(): DemoLedgerEntry {
   return scenarios[(state.evaluation - 1) % scenarios.length]!();
 }
 
+export function runDemoChat(message: string): ChatMessage {
+  ensureDemoSeeded();
+  const dashboard = getDemoDashboard();
+  const pending = getDemoApprovals();
+  const text = message.toLowerCase();
+  let content: string;
+  if (text.includes("approv")) {
+    content = pending.length > 0
+      ? `There is ${pending.length} simulated approval waiting: a $${pending[0]!.amountUSDC} contractor payment. Approve it from the dashboard or Approvals page — no Arc transaction is sent.`
+      : "There are no simulated approvals waiting. Run an agent evaluation if you want another demo decision.";
+  } else if (text.includes("forecast") || text.includes("cash")) {
+    content = dashboard.forecast.summary;
+  } else if (text.includes("ledger") || text.includes("audit")) {
+    content = `The demo ledger currently has ${state.records.length} unsigned simulation records. They are labeled DEMO ONLY and are not cryptographically signed.`;
+  } else if (text.includes("balance") || text.includes("wallet") || text.includes("treasury")) {
+    content = `Simulated liquid treasury is $${dashboard.totalBalance} (treasury $${dashboard.treasuryBalance}, operations $${dashboard.operationsBalance}, reserves $${dashboard.reservesBalance}). Experimental USYC is $${dashboard.usycYield}. These figures are in-memory only.`;
+  } else {
+    content = `This is Demo Mode on a synthetic freelancer treasury. Liquid cash is $${dashboard.totalBalance} with ${dashboard.pendingTransactions} item(s) needing review. ${dashboard.forecast.recommendation} Ask about balances, the forecast, or approvals — chat here does not call OpenAI or Circle.`;
+  }
+  return {
+    id: `demo-chat-${uuid()}`,
+    role: "agent",
+    content,
+    timestamp: new Date().toISOString(),
+  };
+}
+
 export function resolveDemoApproval(id: string, approve: boolean): boolean {
   const approvalIndex = state.approvals.indexOf(id);
   const decision = state.records.find((record) => record.id === id);
@@ -303,5 +375,9 @@ export function resolveDemoApproval(id: string, approve: boolean): boolean {
     transactionId: approve ? `demo-approved-${uuid()}` : undefined,
   });
   return true;
+}
+
+if (initialDemoEnabled()) {
+  setDemoEnabled(true);
 }
 

@@ -4,7 +4,6 @@
 
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
-import { serve } from "@hono/node-server";
 import { config } from "dotenv";
 import { timingSafeEqual } from "node:crypto";
 
@@ -53,10 +52,14 @@ import {
   getDemoApprovals,
   getDemoDashboard,
   isDemoEnabled,
+  isDemoLocked,
+  isVercelDeployment,
   queryDemoLedger,
   resolveDemoApproval,
+  runDemoChat,
   runDemoEvaluation,
   setDemoEnabled,
+  shouldInitializeLiveServices,
 } from "./demo.js";
 import {
   acceptUserInvite,
@@ -72,7 +75,7 @@ import {
 
 // ── Load environment ────────────────────────────
 // Skip dotenv in Vercel (env vars are automatically available)
-if (process.env.VERCEL !== "1") {
+if (!isVercelDeployment()) {
   config({ path: "../../.env" });
 }
 
@@ -162,7 +165,11 @@ app.get("/", (c) =>
 );
 
 app.get("/health", (c) =>
-  c.json({ status: "ok", timestamp: new Date().toISOString() })
+  c.json({
+    status: "ok",
+    mode: c.get("demoMode") ? "demo" : "live",
+    timestamp: new Date().toISOString(),
+  })
 );
 
 // ── Dashboard ──────────────────────────────────
@@ -178,7 +185,7 @@ app.get("/api/dashboard", async (c) => {
     const summary = await getDashboardSummary();
     return c.json<ApiResponse<DashboardSummary>>({
       success: true,
-      data: summary,
+      data: { ...summary, modeLocked: false },
       timestamp: new Date().toISOString(),
     });
   } catch (error: any) {
@@ -195,6 +202,7 @@ app.get("/api/demo", (c) =>
     data: {
       enabled: c.get("demoMode"),
       mode: c.get("demoMode") ? "demo" : "live",
+      locked: isDemoLocked(),
     },
     timestamp: new Date().toISOString(),
   })
@@ -209,12 +217,23 @@ app.post("/api/demo", async (c) => {
         400
       );
     }
+    if (isDemoLocked() && !body.enabled) {
+      return c.json<ApiResponse>(
+        {
+          success: false,
+          error: "Demo Mode is locked on this Vercel deployment so the public demo can run without Circle credentials. Set AGENTVAULT_DEMO_MODE=0 to use live data.",
+          timestamp: new Date().toISOString(),
+        },
+        409
+      );
+    }
     setDemoEnabled(body.enabled);
     return c.json<ApiResponse>({
       success: true,
       data: {
         enabled: isDemoEnabled(),
         mode: isDemoEnabled() ? "demo" : "live",
+        locked: isDemoLocked(),
       },
       timestamp: new Date().toISOString(),
     });
@@ -375,17 +394,20 @@ app.post("/api/onboarding/activity", async (c) => {
 // ── Chat with Agent ────────────────────────────
 app.post("/api/chat", async (c) => {
   try {
-    if (c.get("demoMode")) {
-      return c.json<ApiResponse>(
-        {
-          success: false,
-          error: "Agent chat is disabled in Demo Mode so simulation actions cannot affect real wallets.",
-          timestamp: new Date().toISOString(),
-        },
-        409
-      );
-    }
     const { message } = await c.req.json<{ message: string }>();
+    if (c.get("demoMode")) {
+      if (!message) {
+        return c.json<ApiResponse>(
+          { success: false, error: "Message is required", timestamp: new Date().toISOString() },
+          400
+        );
+      }
+      return c.json<ApiResponse<ChatMessage>>({
+        success: true,
+        data: runDemoChat(message),
+        timestamp: new Date().toISOString(),
+      });
+    }
     if (!message) {
       return c.json<ApiResponse>(
         { success: false, error: "Message is required", timestamp: new Date().toISOString() },
@@ -763,12 +785,9 @@ app.put("/api/guardrails", async (c) => {
 
 // ── Initialize & Start ─────────────────────────
 
-// Initialize Circle service
-initLedger();
+if (shouldInitializeLiveServices()) {
+  initLedger();
 
-// Only initialize Circle and Agent in non-Vercel environments or when credentials are available
-// Demo mode doesn't require these initializations
-if (process.env.VERCEL !== "1" || process.env.CIRCLE_API_KEY) {
   initCircle({
     apiKey: process.env.CIRCLE_API_KEY || "",
     entitySecret: process.env.CIRCLE_ENTITY_SECRET || "",
@@ -786,45 +805,46 @@ if (process.env.VERCEL !== "1" || process.env.CIRCLE_API_KEY) {
     lendingContractAddress: process.env.ARC_LENDING_CONTRACT_ADDRESS || "",
     lendingTokenDecimals: parseInt(process.env.LENDING_TOKEN_DECIMALS || "6"),
   });
-}
 
-// Initialize Agent
-initAgent(applyOnboardingConfiguration({
-  model: process.env.AGENT_MODEL || "gpt-4o",
-  guardrails: {
-    maxDailySpend: parseInt(process.env.AGENT_MAX_DAILY_SPEND || "5000"),
-    approvalThreshold: parseInt(process.env.AGENT_APPROVAL_THRESHOLD || "1000"),
-    autoInvestThreshold: parseInt(process.env.AGENT_AUTO_INVEST_THRESHOLD || "500"),
-    minReserveBalance: parseInt(process.env.AGENT_MIN_RESERVE_BALANCE || "200"),
-    maxBorrowAmount: parseInt(process.env.AGENT_MAX_BORROW_AMOUNT || "2000"),
-    maxDailyBorrow: parseInt(process.env.AGENT_MAX_DAILY_BORROW || "3000"),
-    payrollDay: 1,
-    reservePercent: 15,
-    allowedCategories: [
-      "invoice_payment",
-      "vendor_payment",
-      "contractor_payment",
-      "yield_deposit",
-      "yield_withdrawal",
-      "bridge",
-      "borrow",
-      "repay",
-      "internal_transfer",
-    ],
-    blockedAddresses: [],
-  },
-  wallets: {
-    treasury: process.env.TREASURY_WALLET_ID || "treasury-default",
-    operations: process.env.OPERATIONS_WALLET_ID || "operations-default",
-    reserves: process.env.RESERVES_WALLET_ID || "reserves-default",
-  },
-}));
+  initAgent(applyOnboardingConfiguration({
+    model: process.env.AGENT_MODEL || "gpt-4o",
+    guardrails: {
+      maxDailySpend: parseInt(process.env.AGENT_MAX_DAILY_SPEND || "5000"),
+      approvalThreshold: parseInt(process.env.AGENT_APPROVAL_THRESHOLD || "1000"),
+      autoInvestThreshold: parseInt(process.env.AGENT_AUTO_INVEST_THRESHOLD || "500"),
+      minReserveBalance: parseInt(process.env.AGENT_MIN_RESERVE_BALANCE || "200"),
+      maxBorrowAmount: parseInt(process.env.AGENT_MAX_BORROW_AMOUNT || "2000"),
+      maxDailyBorrow: parseInt(process.env.AGENT_MAX_DAILY_BORROW || "3000"),
+      payrollDay: 1,
+      reservePercent: 15,
+      allowedCategories: [
+        "invoice_payment",
+        "vendor_payment",
+        "contractor_payment",
+        "yield_deposit",
+        "yield_withdrawal",
+        "bridge",
+        "borrow",
+        "repay",
+        "internal_transfer",
+      ],
+      blockedAddresses: [],
+    },
+    wallets: {
+      treasury: process.env.TREASURY_WALLET_ID || "treasury-default",
+      operations: process.env.OPERATIONS_WALLET_ID || "operations-default",
+      reserves: process.env.RESERVES_WALLET_ID || "reserves-default",
+    },
+  }));
+}
 
 const port = parseInt(process.env.API_PORT || "4000");
 
-if (process.env.VERCEL !== "1") {
-  serve({ fetch: app.fetch, port }, (info) => {
-    console.log(`\n🏦 AgentVault Treasury API running on http://localhost:${info.port}\n`);
+if (!isVercelDeployment() && !process.env.NEXT_RUNTIME) {
+  void import("@hono/node-server").then(({ serve }) => {
+    serve({ fetch: app.fetch, port }, (info) => {
+      console.log(`\n🏦 AgentVault Treasury API running on http://localhost:${info.port}\n`);
+    });
   });
 }
 
